@@ -1,0 +1,29 @@
+{
+  "name": "jest-lite",
+  "version": "1.0.0",
+  "description": "An isomorphic test suite with a mostly Jest-compatible API.",
+  "type": "module",
+  "main": "jest-lite.js",
+  "exports": {
+    ".": {
+      "import": "./jest-lite.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "testing",
+    "isomorphic",
+    "jest",
+    "assert",
+    "expect",
+    "mocking",
+    "spying"
+  ],
+  "author": "sc0ttj",
+  "license": "MIT",
+  "devDependencies": {
+    "axios": "^1.16.1"
+  }
+}
