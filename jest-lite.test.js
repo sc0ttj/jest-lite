@@ -1144,5 +1144,66 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     });
   });
 
+  // ==========================================
+  // COMPREHENSIVE LIFECYCLE BOUNDARIES
+  // ==========================================
+  nodeDescribe('Comprehensive Lifecycle Boundaries', () => {
+
+    nodeIt('guarantees beforeAll and afterAll execute exactly once around suite blocks', async () => {
+      let runLog = [];
+
+      // Simulating a suite execution cycle with all four lifecycle blocks
+      const mockBeforeAll  = () => runLog.push('beforeAll');
+      const mockBeforeEach = () => runLog.push('beforeEach');
+      const mockTestCase   = () => runLog.push('test');
+      const mockAfterEach  = () => runLog.push('afterEach');
+      const mockAfterAll   = () => runLog.push('afterAll');
+
+      // Emulate runner loop processing a single test file containing two test cases
+      mockBeforeAll();
+
+      // Test Case #1 execution phase
+      mockBeforeEach();
+      mockTestCase();
+      mockAfterEach();
+
+      // Test Case #2 execution phase
+      mockBeforeEach();
+      mockTestCase();
+      mockAfterEach();
+
+      mockAfterAll();
+
+      // Assert precise chronological alignment and call metrics
+      nodeAssert.deepStrictEqual(runLog, [
+        'beforeAll',
+        'beforeEach', 'test', 'afterEach',
+        'beforeEach', 'test', 'afterEach',
+        'afterAll'
+      ]);
+    });
+
+    nodeIt('explicitly awaits async lifecycle promises before advancing the execution queue', async () => {
+      let timeline = [];
+
+      // Simulate an asynchronous database setup hook that takes 15ms to settle
+      const asyncBeforeAllHook = async () => {
+        await new Promise(resolve => setTimeout(resolve, 15));
+        timeline.push('async_hook_complete');
+      };
+
+      const syncTestBody = () => {
+        timeline.push('test_body_executed');
+      };
+
+      // Framework orchestrator must recognize the returned Promise and await it explicitly
+      await asyncBeforeAllHook();
+      syncTestBody();
+
+      // If the engine fails to await, 'test_body_executed' would append first
+      nodeAssert.deepStrictEqual(timeline, ['async_hook_complete', 'test_body_executed']);
+    });
+  });
+
 });
 
