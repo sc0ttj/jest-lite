@@ -1013,5 +1013,57 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
       nodeAssert.deepStrictEqual(dynamicExecutionTimeline, ['A', 'B', 'C']);
     });
   });
+
+  // ==========================================
+  // ADVERSARIAL FRONTIER MUTATION SUITE
+  // ==========================================
+  nodeDescribe('Adversarial Frontier Mutation & Chronological Order', () => {
+
+    nodeAfter(() => {
+      globalThis.jest.useRealTimers();
+    });
+
+    nodeIt('guarantees zero-delay macro-tasks execute in strict chronological insertion order', () => {
+      globalThis.jest.useFakeTimers();
+      const executionTimeline = [];
+
+      // Queue three distinct tasks all targeting the exact same virtual time tick index
+      setTimeout(() => executionTimeline.push(1), 0);
+      setTimeout(() => executionTimeline.push(2), 0);
+      setTimeout(() => executionTimeline.push(3), 0);
+
+      globalThis.jest.advanceTimersByTime(0);
+
+      // Verifies that your inner task queue preserves FIFO (First-In, First-Out) stability
+      nodeAssert.deepStrictEqual(executionTimeline, [1, 2, 3]);
+    });
+
+    nodeIt('validates edge-case evaluation rules for empty objectContaining filters', () => {
+      const emptyMask = globalThis.jest.expect.objectContaining({});
+
+      // An empty mask matches any object structure, but must reject primitive data shapes
+      nodeAssert.equal(emptyMask.asymmetricMatch({ user: 'active' }), true);
+      nodeAssert.equal(emptyMask.asymmetricMatch(42), false);
+      nodeAssert.equal(emptyMask.asymmetricMatch("text"), false);
+    });
+
+    nodeIt('validates edge-case evaluation rules for empty arrayContaining filters', () => {
+      const emptyArrayMask = globalThis.jest.expect.arrayContaining([]);
+
+      // Matches any array shape, but must reject primitive value layouts
+      nodeAssert.equal(emptyArrayMask.asymmetricMatch([1, 2, 3]), true);
+      nodeAssert.equal(emptyArrayMask.asymmetricMatch({}), false);
+      nodeAssert.equal(emptyArrayMask.asymmetricMatch(null), false);
+    });
+
+    nodeIt('safely normalizes toxic escape strings inside expect.stringMatching', () => {
+      // Direct pass constraint test using standard path windows escape characters
+      const systemPathPattern = globalThis.jest.expect.stringMatching("C:\\\\Users\\\\jarvis");
+
+      nodeAssert.equal(systemPathPattern.asymmetricMatch("C:\\Users\\jarvis\\Documents"), true);
+      nodeAssert.equal(systemPathPattern.asymmetricMatch("D:\\Files"), false);
+    });
+  });
+
 });
 
