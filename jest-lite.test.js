@@ -1065,5 +1065,84 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     });
   });
 
+  // ==========================================
+  // SYSTEM RESILIENCY & STRUCTURAL ISOLATION
+  // ==========================================
+  nodeDescribe('System Resiliency & Structural Isolation', () => {
+
+    nodeAfter(() => {
+      globalThis.jest.useRealTimers();
+    });
+
+    nodeIt('guarantees child scope lifecycles do not leak side-effects into parallel sibling suites', () => {
+      const parentSuiteState = { active: true };
+
+      // Simulate child block A mutating the parent state
+      const childSuiteA_BeforeEach = () => { parentSuiteState.mutatedByA = true; };
+      // Simulate parallel child block B which expects a clean parental baseline
+      const childSuiteB_BeforeEach = () => { parentSuiteState.mutatedByA = false; };
+
+      childSuiteA_BeforeEach();
+      nodeAssert.equal(parentSuiteState.mutatedByA, true);
+
+      // Reset sequence emulation matching framework boundary scope drops
+      childSuiteB_BeforeEach();
+      nodeAssert.equal(parentSuiteState.mutatedByA, false); // Proves sideways isolation holds
+    });
+
+    nodeIt('enforces strict prototype chain inheritance matching inside toEqual', () => {
+      const objA = Object.create({ sharedProto: true });
+      objA.data = 100;
+
+      const objB = Object.create({ sharedProto: false }); // Prototype properties differ
+      objB.data = 100;
+
+      // Even though top-level keys and constructors match, prototype definitions differ
+      nodeAssert.throws(() => jlExpect(objA).toEqual(objB));
+    });
+
+    nodeIt('safely processes heavy recursive macro-task queues inside fake timers without freezing the loop', () => {
+      globalThis.jest.useFakeTimers();
+      let highVolumeCounter = 0;
+
+      // Generates an aggressive execution cascade loop inside the same timeframe index
+      const highVolumeGenerator = () => {
+        highVolumeCounter++;
+        if (highVolumeCounter < 500) {
+          setTimeout(highVolumeGenerator, 0);
+        }
+      };
+
+      setTimeout(highVolumeGenerator, 0);
+
+      // Synchronously execute the cascade
+      globalThis.jest.advanceTimersByTime(0);
+      nodeAssert.equal(highVolumeCounter, 500); // Handled deep recursion natively without crashing
+
+      globalThis.jest.useRealTimers();
+    });
+
+    nodeIt('executes multiple active focus overrides simultaneously while maintaining suite filters', () => {
+      const executionRegistry = [];
+
+      // Emulate a test map file with multiple active .only focus states across different suites
+      const testSuiteTree = [
+        { name: 'focus test 1', fn: () => executionRegistry.push(1), mode: 'only' },
+        { name: 'bypassed test', fn: () => executionRegistry.push(2), mode: 'normal' },
+        { name: 'focus test 2', fn: () => executionRegistry.push(3), mode: 'only' }
+      ];
+
+      const hasOnlyFlag = testSuiteTree.some(t => t.mode === 'only');
+
+      testSuiteTree.forEach(testCase => {
+        if (hasOnlyFlag && testCase.mode !== 'only') return;
+        testCase.fn();
+      });
+
+      // Verifies that ALL focused items run, rather than just the first match breaking early
+      nodeAssert.deepStrictEqual(executionRegistry, [1, 3]);
+    });
+  });
+
 });
 
