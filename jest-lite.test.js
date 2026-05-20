@@ -820,6 +820,70 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     });
   });
 
+  // ==========================================
+  // ENGINE EDGE BOUNDARIES & PROTOTYPE SHARDS
+  // ==========================================
+  nodeDescribe('Engine Edge Boundaries & Prototype Shards', () => {
+
+    nodeIt('enforces strict prototype architecture matching during deep equality checks', () => {
+      class StructuralModel {
+        constructor(val) { this.data = val; }
+      }
+
+      const instanceA = new StructuralModel(42);
+      const plainObject = { data: 42 };
+
+      // Even though keys and values are identical, structural definitions differ
+      nodeAssert.throws(() => jlExpect(instanceA).toEqual(plainObject));
+    });
+
+    nodeIt('manages sequential recursive macro-tasks accurately inside fake timers', () => {
+      globalThis.jest.useFakeTimers();
+      let stepCounter = 0;
+
+      // Setup an engine recursive execution loop
+      const recursiveTask = () => {
+        stepCounter++;
+        setTimeout(recursiveTask, 100);
+      };
+
+      setTimeout(recursiveTask, 100);
+
+      // Advance by 250ms -> Should trigger exactly at 100ms and 200ms
+      globalThis.jest.advanceTimersByTime(250);
+      nodeAssert.equal(stepCounter, 2);
+
+      globalThis.jest.useRealTimers();
+    });
+
+    nodeIt('gracefully falls back to default fallback thresholds inside waitFor', async () => {
+      let settledState = false;
+      setTimeout(() => { settledState = true; }, 10);
+
+      // Executes without passing an options configuration block parameter
+      await nodeAssert.doesNotReject(async () => {
+        await globalThis.jest.waitFor(() => {
+          jlExpect(settledState).toBe(true);
+        }); // Uses your framework's internal 1000ms/50ms defaults
+      });
+    });
+
+    nodeIt('isolates individual step matrix failures inside data-driven loops', () => {
+      let processedRows = 0;
+      const flawedDataMatrix = [[1, 1], [2, 5], [3, 3]]; // Row 2 is an intentional failure
+
+      const executeLoopMock = () => {
+        flawedDataMatrix.forEach(([input, expected]) => {
+          processedRows++;
+          jlExpect(input).toBe(expected);
+        });
+      };
+
+      // Execution loop must throw when encountering the broken matrix row
+      nodeAssert.throws(() => executeLoopMock());
+      nodeAssert.equal(processedRows, 2); // Confirms execution halted cleanly on the failure row
+    });
+  });
 
 });
 

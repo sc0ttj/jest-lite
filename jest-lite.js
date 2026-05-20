@@ -288,9 +288,13 @@
 
     // 7. Deep Object Structural Verification
     if (typeof a === 'object') {
+      // CRITICAL REGRESSION FIX: Enforce prototype constructor blueprint matching
+      // Ensures a class instance does not accidentally match a plain object literal
+      if (a.constructor !== b.constructor) return false;
+
       const keysA = Object.keys(a).filter(k => k !== 'asymmetricMatch' && k !== 'test');
       const keysB = Object.keys(b).filter(k => k !== 'asymmetricMatch' && k !== 'test');
-      
+
       if (keysA.length !== keysB.length) return false;
       return keysA.every(key => Object.hasOwn(b, key) && deepEquals(a[key], b[key], seen));
     }
