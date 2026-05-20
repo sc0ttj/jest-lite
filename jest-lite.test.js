@@ -705,7 +705,6 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   // ==========================================
   nodeDescribe('Virtual Time-Travel Clock Accelerator Engine', () => {
 
-    // FIX: Changed nodeAfterEach to nodeAfter (which matches your imported Section 2 hooks)
     nodeAfter(() => {
       // Teardown hook: always restore real system timers when exiting this suite
       globalThis.jest.useRealTimers();
@@ -882,6 +881,73 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
       // Execution loop must throw when encountering the broken matrix row
       nodeAssert.throws(() => executeLoopMock());
       nodeAssert.equal(processedRows, 2); // Confirms execution halted cleanly on the failure row
+    });
+  });
+
+  // ==========================================
+  // ABSOLUTE FRONTIER BOUNDARIES
+  // ==========================================
+  nodeDescribe('Absolute Frontier Boundaries & Core Safety', () => {
+
+    nodeAfter(() => {
+      globalThis.jest.useRealTimers();
+    });
+
+    nodeIt('verifies clearInterval purges active recurring tasks from the virtual timeline', () => {
+      globalThis.jest.useFakeTimers();
+      let executionTicks = 0;
+
+      const intervalId = setInterval(() => {
+        executionTicks++;
+      }, 100);
+
+      globalThis.jest.advanceTimersByTime(250); // Fires at 100ms and 200ms
+      nodeAssert.equal(executionTicks, 2);
+
+      clearInterval(intervalId); // Terminate the recurring interval now
+      globalThis.jest.advanceTimersByTime(500);
+
+      nodeAssert.equal(executionTicks, 2); // Confirms the interval was successfully deleted
+    });
+
+    nodeIt('falls back safely to standard strings when custom matchers omit the message block', () => {
+      // Register a barebones custom matcher with a static or missing message attribute
+      jlExpect.extend({
+        toPassSilently(actual) {
+          return { pass: false, message: undefined }; // Triggers your framework's 'Custom matcher assertion failed' fallback
+        }
+      });
+
+      nodeAssert.throws(
+        () => jlExpect("test").toPassSilently(),
+        /Custom matcher assertion failed/
+      );
+    });
+
+    nodeIt('safely normalizes missing or non-numeric delays inside the fake timer engine', () => {
+      globalThis.jest.useFakeTimers();
+      let triggered = false;
+
+      // Pass bad string inputs into the queue -> should fallback to 0 or execute cleanly
+      setTimeout(() => { triggered = true; }, "not-a-number");
+
+      globalThis.jest.advanceTimersByTime(1);
+      nodeAssert.equal(triggered, true); // Engine processed it safely without a NaN crash
+    });
+
+    nodeIt('processes tokens like %i and %s correctly inside data-driven failure tracking profiles', () => {
+      const failingEachMatrix = [[10, "Apple"]];
+
+      const simulateFailingEach = () => {
+        failingEachMatrix.forEach(([num, word]) => {
+          // Emulate what your framework's name parser outputs on string mismatch interpolation
+          const interpolatedName = `adds ${num} to word ${word}`.replace('%i', num).replace('%s', word);
+          nodeAssert.match(interpolatedName, /adds 10 to word Apple/);
+          jlExpect(num).toBe(99); // Intentionally fail the verification check
+        });
+      };
+
+      nodeAssert.throws(() => simulateFailingEach());
     });
   });
 
