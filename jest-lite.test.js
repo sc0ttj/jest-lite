@@ -38,8 +38,8 @@ globalThis.document = {
       style: {},
       appendChild() {},
       setAttribute() {},
-      focus() { 
-        this._focused = true; 
+      focus() {
+        this._focused = true;
         globalThis.document.activeElement = el; // Tells your framework this element is now active
       },
       remove() { this._removed = true; },
@@ -61,11 +61,11 @@ import nodeAssert from 'node:assert';
 import axios from 'axios';
 
 // Import your custom framework (loads its primitives onto the global scope)
-import './jest-lite.js'; 
+import './jest-lite.js';
 
 // Safely extract framework APIs regardless of how they are attached globally
 const jlExpect = globalThis.jest?.expect || globalThis.expect;
-const jlFn     = globalThis.jest?.fn     || globalThis.fn; 
+const jlFn     = globalThis.jest?.fn     || globalThis.fn;
 const jlSpyOn  = globalThis.jest?.spyOn  || globalThis.spyOn;
 
 // Quick health-check verification assertion for Node's runner
@@ -82,7 +82,7 @@ const mockRegistry = {};
 
 // Keep your framework's existing properties, then layer on module mocks
 globalThis.jest = {
-  ...globalThis.jest, 
+  ...globalThis.jest,
   mock(moduleName, factory) {
     mockRegistry[moduleName] = factory();
   },
@@ -108,14 +108,14 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     nodeIt('verifies complex logic, snapshots, and deep equality', () => {
       // Create the mock standalone first so its properties remain intact
       const mockLogin = jlFn(() => 'Success');
-      
+
       const user = { id: 1, name: 'Dev', login: mockLogin };
       user.login();
-      
+
       // Test against the direct mock reference to bypass property extraction shedding
       nodeAssert.doesNotThrow(() => jlExpect(mockLogin).toHaveBeenCalledTimes(1));
       nodeAssert.doesNotThrow(() => jlExpect(mockLogin).toHaveReturnedWith('Success'));
-      
+
       const objA = { tags: [1, 2] };
       const objB = { tags: [1, 2] };
       nodeAssert.doesNotThrow(() => jlExpect(objA).toEqual(objB));
@@ -262,7 +262,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     nodeIt('fetches data from our emulated module registry context', async () => {
       const mockedAxios = globalThis.jest.requireMock('axios');
       const response = await mockedAxios.get('/api/user');
-      
+
       nodeAssert.equal(response.data.user, 'Fake User');
       nodeAssert.doesNotThrow(() => jlExpect(mockedAxios.get).toHaveBeenCalledWith('/api/user'));
     });
@@ -273,7 +273,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
       nodeAssert.equal(baseService.getData(), "Mocked Data");
       nodeAssert.doesNotThrow(() => jlExpect(activeSpy).toHaveBeenCalled());
-      
+
       activeSpy.mockRestore();
       nodeAssert.equal(baseService.getData(), "Real Data");
     });
@@ -282,15 +282,15 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   nodeDescribe('Lifecycle Hook Sequence and Inheritance', () => {
     nodeIt('inherits parental beforeEach configurations dynamically', () => {
       let tracker = [];
-      
+
       // We simulate what your runner does under the hood when parsing hooks
       const parentBeforeEach = () => tracker.push('parent');
       const childBeforeEach = () => tracker.push('child');
-      
+
       // Execute sequence simulation
       parentBeforeEach();
       childBeforeEach();
-      
+
       nodeAssert.deepStrictEqual(tracker, ['parent', 'child']);
     });
   });
@@ -298,7 +298,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   nodeDescribe('Matcher Error Boundaries', () => {
     nodeIt('throws an explicit mismatch message for failing toMatchObject', () => {
       const car = { make: 'Tesla', model: 'Model 3' };
-      
+
       // Verify that your framework throws an error containing the mismatch details
       nodeAssert.throws(
         () => jlExpect(car).toMatchObject({ make: 'Tesla', model: 'Model S' }),
@@ -308,7 +308,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('throws when expect.any type conditions fail', () => {
       const dynamicUser = { id: 'not-a-number' };
-      
+
       nodeAssert.throws(
         () => jlExpect(dynamicUser).toMatchObject({ id: jlExpect.any(Number) })
       );
@@ -316,7 +316,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('fails toThrow when function executes without an error', () => {
       const safeFn = () => "I am safe";
-      
+
       nodeAssert.throws(
         () => jlExpect(safeFn).toThrow()
       );
@@ -333,7 +333,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('safely matches arrays containing mixed types or sub-matchers', () => {
       const mixedBag = ['Error: 404', 42, { item: 'config' }];
-      
+
       nodeAssert.doesNotThrow(() => jlExpect(mixedBag).toEqual(
         jlExpect.arrayContaining([
           jlExpect.stringMatching(/^Error:/),
@@ -370,7 +370,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   nodeDescribe('Runner Optimization & Exclusion Strategy', () => {
     nodeIt('respects skip flags by completely bypassing execution blocks', () => {
       let executionCount = 0;
-      
+
       // Simulate your framework's internal registration mechanism for a skipped test
       const mockTestRegistryItem = {
         name: 'should not run',
@@ -388,7 +388,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('activates two-phase runner sequence to prioritize focus filters', () => {
       const suiteExecutionLog = [];
-      
+
       // Simulating a suite tree containing standard tests and a focused .only test
       const simulatedSuite = [
         { name: 'test 1', fn: () => suiteExecutionLog.push(1), mode: 'normal' },
@@ -423,7 +423,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('evaluates regular expression regex structures via toMatch', () => {
       const serialCode = "ID-99823-X";
-      
+
       nodeAssert.doesNotThrow(() => jlExpect(serialCode).toMatch(/^ID-\d+-X$/));
       nodeAssert.doesNotThrow(() => jlExpect(serialCode).toMatch("99823")); // String submatch support
       nodeAssert.throws(() => jlExpect(serialCode).toMatch(/^id-\d+-x$/));   // Case-sensitive failure
@@ -431,7 +431,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('extends toThrow error handling to validate RegExp message definitions', () => {
       const crashFn = () => { throw new TypeError('Auth Failure: Invalid Token'); };
-      
+
       // Framework should verify error messages against regex boundaries
       nodeAssert.doesNotThrow(() => jlExpect(crashFn).toThrow(/Auth Failure/));
       nodeAssert.doesNotThrow(() => jlExpect(crashFn).toThrow(/^Auth.*Token$/));
@@ -465,7 +465,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
       nodeAssert.doesNotThrow(() => jlExpect(squareSpy).toHaveReturnedWith(4));
       nodeAssert.doesNotThrow(() => jlExpect(squareSpy).toHaveReturnedWith(16));
       nodeAssert.doesNotThrow(() => jlExpect(squareSpy).toHaveReturnedWith(25));
-      
+
       squareSpy.mockRestore();
     });
 
@@ -477,17 +477,17 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
       // Parameter structural validation pass
       nodeAssert.doesNotThrow(() => jlExpect(notifySpy).toHaveBeenCalledWith("Welcome", jlExpect.any(Number)));
-      
+
       // Argument parameters deviation verification must throw an explicit error
       nodeAssert.throws(() => jlExpect(notifySpy).toHaveBeenCalledWith("Goodbye", 200));
       nodeAssert.throws(() => jlExpect(notifySpy).toHaveBeenCalledWith("Welcome", 500));
-      
+
       notifySpy.mockRestore();
     });
 
     nodeIt('proves framework orchestrates global automated mock cleanup loops without manual intervention', () => {
       const dataStore = { fetch: () => "pristine" };
-      
+
       // Simulate loop iteration sequence #1 (Inject and use a spy variant)
       const executionSpy = jlSpyOn(dataStore, 'fetch').mockReturnValue("hijacked");
       nodeAssert.equal(dataStore.fetch(), "hijacked");
@@ -507,7 +507,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   nodeDescribe('Advanced Regression & Nested Failure State Diffing', () => {
     nodeIt('processes negative inheritance mismatch errors for toBeInstanceOf', () => {
       const anonymousObj = { name: 'stub' };
-      
+
       // Asserts that standard instances throw clear errors if evaluation matrices mismatch
       nodeAssert.throws(() => jlExpect(anonymousObj).toBeInstanceOf(Array));
       nodeAssert.throws(() => jlExpect("primitive string").toBeInstanceOf(String));
@@ -556,7 +556,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('handles async lifecycle promises in proper chronological order', async () => {
       let timeline = [];
-      
+
       const asyncHook = async () => {
         await new Promise(resolve => setTimeout(resolve, 10));
         timeline.push('hook_done');
@@ -570,7 +570,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('aborts execution safely when async lifecycles experience unexpected rejections', async () => {
       let testExecuted = false;
-      
+
       // Simulating a failed lifecycle connection (e.g. database down)
       const brokenHook = async () => {
         throw new Error('Lifecycle Setup Failure');
@@ -608,7 +608,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
       class CustomButton extends BaseWidget {}
 
       const instance = new CustomButton();
-      
+
       const prototypeSpy = jlSpyOn(BaseWidget.prototype, 'render').mockReturnValue('mocked');
       nodeAssert.equal(instance.render(), 'mocked');
 
@@ -624,7 +624,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   // JEST-COMPATIBLE CUSTOM MATCHERS (expect.extend)
   // ==========================================
   nodeDescribe('Jest-Compatible Custom Matchers Framework', () => {
-    
+
     nodeBefore(() => {
       // FIX: Use your direct framework alias instead of the overwritten globalThis.jest object
       jlExpect.extend({
@@ -639,8 +639,8 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
           const pass = actual >= floor && actual <= ceiling;
           return {
             pass,
-            message: () => pass 
-              ? `Expected ${actual} to break budget constraints` 
+            message: () => pass
+              ? `Expected ${actual} to break budget constraints`
               : `Expected ${actual} to be inside budget bounds [${floor} - ${ceiling}]`
           };
         }
@@ -670,10 +670,10 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   // ASYNCHRONOUS EVENT POLLING (waitFor)
   // ==========================================
   nodeDescribe('Asynchronous Event Polling Core (waitFor)', () => {
-    
+
     nodeIt('successfully resolves once a delayed asynchronous modification passes', async () => {
       let reactiveState = "pending";
-      
+
       // Simulate an asynchronous micro-task operation settling after 20ms
       setTimeout(() => {
         reactiveState = "resolved";
@@ -704,7 +704,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
   // VIRTUAL CLOCK ACCELERATION (useFakeTimers)
   // ==========================================
   nodeDescribe('Virtual Time-Travel Clock Accelerator Engine', () => {
-    
+
     // FIX: Changed nodeAfterEach to nodeAfter (which matches your imported Section 2 hooks)
     nodeAfter(() => {
       // Teardown hook: always restore real system timers when exiting this suite
@@ -756,6 +756,69 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     });
   });
 
+  // ==========================================
+  // FRAMEWORK RESILIENCY & MISMATCH BOUNDARIES
+  // ==========================================
+  nodeDescribe('Framework Resiliency & Mismatch Boundaries', () => {
+
+    nodeIt('asserts that standard matchers throw distinct errors on evaluation failure', () => {
+      // Core validation: Ensure passing wrong inputs to basic matchers breaks predictably
+      nodeAssert.throws(() => jlExpect(5).toBe(10));
+      nodeAssert.throws(() => jlExpect({ x: 1 }).toEqual({ x: 2 }));
+      nodeAssert.throws(() => jlExpect([1, 2]).toContain(3));
+      nodeAssert.throws(() => jlExpect(false).toBeTruthy());
+    });
+
+    nodeIt('guards asymmetric matchers against invalid primitive input formats safely', () => {
+      // Rejects structural objects when actual input is a primitive or null
+      const objMatcher = globalThis.jest.expect.objectContaining({ id: 1 });
+      nodeAssert.equal(objMatcher.asymmetricMatch(null), false);
+      nodeAssert.equal(objMatcher.asymmetricMatch("not-an-object"), false);
+
+      // expect.anything must reject null and undefined explicitly
+      const anythingMatcher = globalThis.jest.expect.anything();
+      nodeAssert.equal(anythingMatcher.asymmetricMatch(null), false);
+      nodeAssert.equal(anythingMatcher.asymmetricMatch(undefined), false);
+    });
+
+    nodeIt('wipes historic tracking matrices cleanly when clearAllMocks is invoked', () => {
+      const dummyObj = { action: () => 'done' };
+      const activeSpy = jlSpyOn(dummyObj, 'action');
+
+      dummyObj.action();
+      nodeAssert.equal(activeSpy.mock.calls.length, 1);
+
+      // Execute your global state clearing loop utility
+      globalThis.jest.clearAllMocks();
+
+      // Crucial check: Spy must stay active but its historic call logs must reset to zero
+      nodeAssert.equal(activeSpy.mock.calls.length, 0);
+      nodeAssert.equal(dummyObj.action(), 'done'); // Method must still be hooked
+
+      activeSpy.mockRestore();
+    });
+
+    nodeIt('isolates suite execution loops cleanly if an operational setup hook crashes', async () => {
+      let testExecuted = false;
+
+      // Simulate a broken runtime lifecycle pipeline setup scenario
+      const simulateRunnerWithBrokenHook = async () => {
+        const beforeEachHook = () => { throw new Error('Database connection lost'); };
+        const testCase = () => { testExecuted = true; };
+
+        // Framework runner execution logic simulation loop
+        beforeEachHook();
+        testCase();
+      };
+
+      // Ensure the failure bubbles out safely without running downstream code
+      await nodeAssert.rejects(async () => {
+        await simulateRunnerWithBrokenHook();
+      }, /Database connection lost/);
+
+      nodeAssert.equal(testExecuted, false); // Proves the test block execution was aborted safely
+    });
+  });
 
 
 });

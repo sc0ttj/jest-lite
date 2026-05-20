@@ -49,6 +49,7 @@
   const moduleRegistry = new Map();
 
   const activeSpies = new Set();
+  const activeSpiesList = [];
 
   /**
    * Global Restorer: Iterates through all tracked spies 
@@ -147,10 +148,9 @@
   function spyOn(obj, method) {
     const original = obj[method];
     const hasOwnOriginal = Object.prototype.hasOwnProperty.call(obj, method);
-    
+
     const mockFn = (...args) => {
       mockFn.mock.calls.push(args);
-      
       let result;
       try {
         if (mockFn._implementation) {
@@ -158,35 +158,45 @@
         } else if (original) {
           result = original.apply(obj, args);
         }
-        
-        // Track history for toHaveReturnedWith
         mockFn.mock.returns.push(result);
         return result;
       } catch (error) {
-        mockFn.mock.returns.push(undefined); // Match history length even on error
+        mockFn.mock.returns.push(undefined);
         throw error;
       }
     };
 
     mockFn.mock = { calls: [], returns: [] };
     mockFn._implementation = null;
-    
-    // Chainable mock behavior engines
+
+    // Clear historical stacks cleanly matching Jest rules
+    mockFn.mockClear = () => {
+      mockFn.mock.calls = [];
+      mockFn.mock.returns = [];
+    };
+
     mockFn.mockImplementation = (fn) => { mockFn._implementation = fn; return mockFn; };
     mockFn.mockReturnValue = (val) => { mockFn._implementation = () => val; return mockFn; };
     mockFn.mockResolvedValue = (val) => { mockFn._implementation = () => Promise.resolve(val); return mockFn; };
-    
+
     mockFn.mockRestore = () => {
       if (hasOwnOriginal) {
         obj[method] = original;
       } else {
         delete obj[method];
       }
+      // Remove from tracking registry on restore
+      const index = activeSpiesList.indexOf(mockFn);
+      if (index > -1) activeSpiesList.splice(index, 1);
     };
+
+    // 2. Automatically record the active spy reference
+    activeSpiesList.push(mockFn);
 
     obj[method] = mockFn;
     return mockFn;
   }
+
 
 
   /**
@@ -1036,12 +1046,18 @@
       return moduleRegistry.get(moduleName);
     },
 
-    // Resets all mocks in the registry
+    // Resets all mocks and spies in the registry
     clearAllMocks: () => {
+      // 1. Clear module registry mock history stacks
       moduleRegistry.forEach(mod => {
         Object.values(mod).forEach(val => {
           if (val && typeof val.mockClear === 'function') val.mockClear();
         });
+      });
+
+      // 2. Clear dynamic spy history tracking arrays
+      activeSpiesList.forEach(spy => {
+        if (typeof spy.mockClear === 'function') spy.mockClear();
       });
     },
   };
@@ -1076,7 +1092,7 @@
 
   // Provide a clean default bundle export configuration mapping 
   export default jest;
-  
+
 
 
 
