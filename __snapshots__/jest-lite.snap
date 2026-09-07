@@ -1,0 +1,6 @@
+{
+  "node_integration_disk_test": "{\n  \"build\": \"v1.0.0\",\n  \"environment\": \"NodeCI\"\n}",
+  "resiliency_mismatch_boundary": "{\n  \"values\": [\n    10,\n    20\n  ]\n}",
+  "ui_theme_config_readme_example": "{\n  \"theme\": \"dark\",\n  \"sidebar\": true,\n  \"fontSize\": 14\n}",
+  "circular_object_snapshot_test": "{\n  \"name\": \"circular_test\",\n  \"self\": \"[Circular]\"\n}"
+}

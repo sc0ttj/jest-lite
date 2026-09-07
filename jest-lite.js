@@ -45,7 +45,7 @@
  */
 
 
-(function() {
+await (async function() {
   const moduleRegistry = new Map();
 
   const activeSpies = new Set();
@@ -502,9 +502,9 @@
       }
     },
 
-    toMatchSnapshot: () => {
+  toMatchSnapshot: (customSnapName) => {
       countAssertion(); // <--- Add this to every matcher
-      const key = getSnapshotKey();
+      const key = (typeof customSnapName === 'string' && customSnapName) ? customSnapName : getSnapshotKey();
       let serialized;
 
       // Circular-safe stringify
@@ -522,7 +522,7 @@
       }
 
       // Environmental Discovery Layer
-      const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
+      const isNode = typeof process !== 'undefined' && process.versions && process.versions.node && !globalThis._forceBrowserStorage;
 
       // Setup isomorphic storage handlers
       const getStoredSnapshot = () => {
@@ -591,7 +591,7 @@
         }
         console.log('%cFix:', 'color: #8e44ad', `Run: window.updateSnapshots = true; run();`);
         console.groupEnd();
-        throw new Error(`Snapshot mismatch for ${key}`);
+        throw new Error(`Snapshot Mismatch for ${key}`);
       }
 
       console.log(`%c  [Snapshot Matched]`, 'color: #7f8c8d; font-style: italic');
@@ -696,8 +696,11 @@
 
     toHaveClass: (className) => {
       countAssertion(); // <--- Add this to every matcher
-      const classes = actual?.classList;
-      if (!classes || !classes.contains(className)) {
+      const classList = actual?.classList;
+      const hasClass = classList && typeof classList.contains === 'function'
+        ? classList.contains(className)
+        : (actual?.className || '').split(/\s+/).includes(className);
+      if (!hasClass) {
         throw new Error(`Expected element to have class "${className}", but got "${actual?.className || ''}"`);
       }
     },

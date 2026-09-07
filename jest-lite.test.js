@@ -2,6 +2,7 @@
 // 1. SETUP - ISOLATED BROWSER / GLOBAL ENVIRONMENT
 // ==========================================
 globalThis.window = globalThis;
+globalThis.HTMLElement = class HTMLElement {};
 
 globalThis.localStorage = {
   store: {},
@@ -34,10 +35,14 @@ const createMockElement = () => ({
 globalThis.document = {
   activeElement: null, // Track focus globally in Node
   createElement() {
+    const attributes = new Map();
     const el = {
       style: {},
+      attributes,
       appendChild() {},
-      setAttribute() {},
+      setAttribute(k, v) { attributes.set(k, String(v)); },
+      getAttribute(k) { return attributes.has(k) ? attributes.get(k) : null; },
+      hasAttribute(k) { return attributes.has(k); },
       focus() {
         this._focused = true;
         globalThis.document.activeElement = el; // Tells your framework this element is now active
@@ -58,10 +63,13 @@ globalThis.document = {
 // ==========================================
 import { describe as nodeDescribe, it as nodeIt, beforeEach as nodeBeforeEach, before as nodeBefore, after as nodeAfter } from 'node:test';
 import nodeAssert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import axios from 'axios';
 
 // Import your custom framework (loads its primitives onto the global scope)
 import './jest-lite.js';
+import { requireMock, mock } from './jest-lite.js';
 
 // Safely extract framework APIs regardless of how they are attached globally
 const jlExpect = globalThis.jest?.expect || globalThis.expect;
@@ -1212,8 +1220,6 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
 
     nodeIt('proves node filesystem routing works and saves snapshot artifacts to the disk', () => {
       // Skip manually if running outside standard node test runner threads
-      const fs = require('fs');
-      const path = require('path');
       const snapFilePath = path.join(process.cwd(), '__snapshots__', 'jest-lite.snap');
 
       // Clear any historic integration state files cleanly
@@ -1235,6 +1241,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     nodeIt('falls back seamlessly to browser localStorage arrays if disk modules are absent', () => {
       // Force temporary runtime environment spoof variables
       const originalLocalStore = globalThis.localStorage;
+      globalThis._forceBrowserStorage = true;
       let virtualStoreMemory = {};
 
       globalThis.localStorage = {
@@ -1253,6 +1260,7 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
       nodeAssert.match(virtualStoreMemory["browser_viewport_mock_snap"], /Browser_Render/);
 
       // Restore baseline global parameters
+      globalThis._forceBrowserStorage = false;
       globalThis.localStorage = originalLocalStore;
     });
 
@@ -1269,6 +1277,434 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
         jlExpect(mutatedPayloadState).toMatchSnapshot("resiliency_mismatch_boundary");
       }, /Snapshot Mismatch/);
     });
+  });
+
+  // ==========================================
+  // README DOCUMENTATION EXAMPLES COMPLIANCE SUITE
+  // ==========================================
+  nodeDescribe('README Documentation Examples Compliance Suite', () => {
+
+    nodeIt('verifies Quickstart Calculator and object equality examples', () => {
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(2 + 3).toBe(5);
+        jlExpect({ user: 'Alice' }).toEqual({ user: 'Alice' });
+      });
+    });
+
+    nodeIt('verifies Section 1 Suite Structure & Test Organization regex and empty checks', () => {
+      const email = 'user@example.com';
+      const password = '';
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(email).toMatch(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+        jlExpect(password).toBeEmpty();
+      });
+    });
+
+    nodeIt('verifies Section 2 Data-Driven Matrix Testing (it.each) examples', () => {
+      // Array matrix form example
+      const matrix = [
+        [1, 1, 2],
+        [5, 5, 10],
+        [10, -2, 8]
+      ];
+      matrix.forEach(([a, b, expected]) => {
+        jlExpect(a + b).toBe(expected);
+      });
+
+      // Object parameter form example
+      const discountRows = [
+        { tier: 'gold', price: 100, expected: 80 },
+        { tier: 'silver', price: 100, expected: 90 },
+        { tier: 'bronze', price: 100, expected: 95 }
+      ];
+      const discountMap = { gold: 0.20, silver: 0.10, bronze: 0.05 };
+      discountRows.forEach(({ tier, price, expected }) => {
+        const finalPrice = price * (1 - discountMap[tier]);
+        jlExpect(finalPrice).toBe(expected);
+      });
+    });
+
+    nodeIt('verifies Section 3 Lifecycle Hooks & Scope Chain example logic', () => {
+      let dbConnection = { status: 'disconnected', queries: 0 };
+      const logs = [];
+
+      // Simulated beforeAll
+      dbConnection.status = 'connected';
+
+      // Simulated beforeEach
+      logs.length = 0;
+      logs.push('record_setup');
+
+      // Test body
+      dbConnection.queries++;
+      jlExpect(dbConnection.status).toBe('connected');
+      jlExpect(logs).toEqual(['record_setup']);
+
+      // Simulated afterAll
+      dbConnection.status = 'disconnected';
+      jlExpect(dbConnection.status).toBe('disconnected');
+    });
+
+    nodeIt('verifies Section 4 Standard Expectations & Matchers examples', () => {
+      // Identity & Equality
+      jlExpect(42).toBe(42);
+      jlExpect(NaN).toBe(NaN);
+      jlExpect({ a: 1, b: [2, 3] }).toEqual({ a: 1, b: [2, 3] });
+
+      // Inversion
+      jlExpect(10).not.toBe(20);
+      jlExpect([1, 2, 3]).not.toContain(99);
+
+      // Nullability & Truthiness
+      jlExpect(undefined).toBeUndefined();
+      jlExpect('hello').toBeDefined();
+      jlExpect(null).toBeNull();
+      jlExpect('active').toBeTruthy();
+      jlExpect(0).toBeFalsy();
+
+      // Numbers & Ranges
+      jlExpect(15).toBeGreaterThan(10);
+      jlExpect(15).toBeGreaterThanOrEqual(15);
+      jlExpect(5).toBeLessThan(20);
+      jlExpect(5).toBeLessThanOrEqual(5);
+      jlExpect(7).toBeWithinRange(1, 10);
+      jlExpect(0.1 + 0.2).toBeCloseTo(0.3, 2);
+
+      // Strings, Regex & Collections
+      jlExpect('JavaScript').toContain('Script');
+      jlExpect(['apple', 'banana']).toContain('apple');
+      jlExpect('apple').toBeOneOf(['apple', 'banana', 'cherry']);
+      jlExpect('ORDER-12345').toMatch(/^ORDER-\d+$/);
+      jlExpect('hello world').toStartWith('hello');
+      jlExpect('hello world').toEndWith('world');
+      jlExpect([]).toBeEmpty();
+      jlExpect({}).toBeEmpty();
+
+      // Types & Instance Checking
+      jlExpect('text').toBeType('string');
+      jlExpect([1, 2]).toBeArray();
+      jlExpect({ key: 'val' }).toBeObject();
+      jlExpect(new Date()).toBeInstanceOf(Date);
+
+      // Object Structure & Properties
+      const user = { profile: { name: 'Alex', age: 30 } };
+      jlExpect(user).toHaveProperty('profile.name', 'Alex');
+      jlExpect(user).toMatchObject({ profile: { name: 'Alex' } });
+
+      // Exception Trapping
+      const throwError = () => {
+        throw new TypeError('Invalid database configuration');
+      };
+      jlExpect(throwError).toThrow();
+      jlExpect(throwError).toThrow('Invalid database');
+      jlExpect(throwError).toThrow(/configuration/);
+    });
+
+    nodeIt('verifies Section 5 Asymmetric Engine Matchers examples', () => {
+      const response = {
+        id: 101,
+        username: 'dev_user',
+        createdAt: new Date(),
+        tags: ['javascript', 'testing']
+      };
+
+      jlExpect(response).toEqual({
+        id: globalThis.jest.expect.any(Number),
+        username: globalThis.jest.expect.stringMatching(/^dev_/),
+        createdAt: globalThis.jest.expect.anything(),
+        tags: globalThis.jest.expect.arrayContaining(['testing'])
+      });
+
+      jlExpect(response).toEqual(
+        globalThis.jest.expect.objectContaining({ id: 101 })
+      );
+    });
+
+    nodeIt('verifies Section 6 UI & DOM Element Matchers examples', () => {
+      const button = globalThis.document.createElement('button');
+      button.className = 'btn btn-primary';
+      button.textContent = 'Submit Form';
+      button.setAttribute('data-testid', 'submit-btn');
+
+      // Mock DOM tree attachment for document.contains
+      const originalContains = globalThis.document.contains;
+      globalThis.document.contains = (node) => node === button || node === globalThis.document.body;
+
+      jlExpect(button).toExist();
+      jlExpect(button).toBeInTheDocument();
+      jlExpect(button).toHaveClass('btn-primary');
+      jlExpect(button).toHaveTextContent('Submit');
+      jlExpect(button).toHaveAttribute('data-testid', 'submit-btn');
+      jlExpect(button).not.toBeDisabled();
+
+      globalThis.document.contains = originalContains;
+    });
+
+    nodeIt('verifies Section 7 Mock Functions (jest.fn) examples', () => {
+      const mockFn = jlFn((a, b) => a + b);
+
+      mockFn(10, 20);
+      mockFn(5, 5);
+
+      jlExpect(mockFn).toHaveBeenCalled();
+      jlExpect(mockFn).toHaveBeenCalledTimes(2);
+      jlExpect(mockFn).toHaveBeenCalledWith(10, 20);
+      jlExpect(mockFn).toHaveReturnedWith(30);
+
+      jlExpect(mockFn.mock.calls).toEqual([[10, 20], [5, 5]]);
+      jlExpect(mockFn.mock.results).toEqual([30, 10]);
+
+      // Overriding implementations & return values
+      const mockFetch = jlFn();
+      mockFetch
+        .mockReturnValueOnce({ status: 200, data: 'first' })
+        .mockReturnValueOnce({ status: 500, data: 'error' })
+        .mockReturnValue({ status: 200, data: 'default' });
+
+      jlExpect(mockFetch()).toEqual({ status: 200, data: 'first' });
+      jlExpect(mockFetch()).toEqual({ status: 500, data: 'error' });
+      jlExpect(mockFetch()).toEqual({ status: 200, data: 'default' });
+
+      // Promise helpers
+      const asyncMock = jlFn().mockResolvedValue({ success: true });
+      return asyncMock().then((result) => {
+        jlExpect(result).toEqual({ success: true });
+      });
+    });
+
+    nodeIt('verifies Section 8 Spying & Automatic Cleanup (jest.spyOn) examples', () => {
+      const cart = {
+        calculateTotal(price, tax) {
+          return price + (price * tax);
+        }
+      };
+
+      const spy = jlSpyOn(cart, 'calculateTotal');
+      cart.calculateTotal(100, 0.1);
+
+      jlExpect(spy).toHaveBeenCalledWith(100, 0.1);
+      jlExpect(spy).toHaveReturnedWith(110);
+
+      spy.mockRestore();
+    });
+
+    nodeIt('verifies Section 9 Asynchronous Testing & Polling (waitFor) examples', async () => {
+      // Standard async/await
+      const fetchUser = async (id) => ({ id, name: 'Alice' });
+      const user = await fetchUser(42);
+      jlExpect(user.name).toBe('Alice');
+
+      // Asynchronous Event Polling
+      const banner = globalThis.document.createElement('div');
+      setTimeout(() => {
+        banner.textContent = 'Ready';
+      }, 50);
+
+      const waitForFn = globalThis.jest.waitFor || globalThis.waitFor;
+      await waitForFn(() => {
+        jlExpect(banner.textContent).toBe('Ready');
+      }, { timeout: 500, interval: 10 });
+    });
+
+    nodeIt('verifies Section 10 Fake Timers & Time Travel examples', () => {
+      globalThis.jest.useFakeTimers();
+
+      let executed = false;
+      setTimeout(() => {
+        executed = true;
+      }, 10000);
+
+      jlExpect(executed).toBe(false);
+
+      globalThis.jest.advanceTimersByTime(10000);
+
+      jlExpect(executed).toBe(true);
+
+      globalThis.jest.useRealTimers();
+    });
+
+    nodeIt('verifies Section 11 Isomorphic State Snapshots examples', () => {
+      const config = {
+        theme: 'dark',
+        sidebar: true,
+        fontSize: 14
+      };
+
+      jlExpect(config).toMatchSnapshot('ui_theme_config_readme_example');
+    });
+
+    nodeIt('verifies Section 12 Extending Matchers (expect.extend) examples', () => {
+      globalThis.jest.expect.extend({
+        toBeValidUUID(actual) {
+          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          const pass = typeof actual === 'string' && uuidRegex.test(actual);
+
+          return {
+            pass,
+            message: () => pass
+              ? `Expected "${actual}" not to be a valid UUID`
+              : `Expected "${actual}" to be a valid UUID`
+          };
+        }
+      });
+
+      jlExpect('123e4567-e89b-12d3-a456-426614174000').toBeValidUUID();
+      jlExpect('invalid-id').not.toBeValidUUID();
+    });
+
+    nodeIt('verifies Section 13 Module System Emulation examples', async () => {
+      globalThis.jest.mock('api-client', () => ({
+        fetchUsers: jlFn().mockResolvedValue([{ id: 1, name: 'Bob' }])
+      }));
+
+      const apiClient = globalThis.jest.requireMock('api-client');
+      const users = await apiClient.fetchUsers();
+
+      jlExpect(users).toEqual([{ id: 1, name: 'Bob' }]);
+      jlExpect(apiClient.fetchUsers).toHaveBeenCalled();
+
+      globalThis.jest.clearAllMocks();
+    });
+
+  });
+
+  // ==========================================
+  // DEFENSIVE EDGE-CASES AND MISUSE PREVENTION SUITE
+  // ==========================================
+  nodeDescribe('Defensive Edge-Cases and Misuse Prevention Suite', () => {
+
+    nodeIt('handles DOM toBeVisible, toHaveStyle, and toHaveFocus edge cases', () => {
+      // Setup mock getComputedStyle on global window
+      const originalGetComputedStyle = globalThis.window.getComputedStyle;
+      
+      let mockStyleObj = {
+        display: 'block',
+        visibility: 'visible',
+        getPropertyValue: (prop) => {
+          if (prop === 'background-color') return 'red';
+          if (prop === 'font-size') return '16px';
+          return '';
+        }
+      };
+
+      globalThis.window.getComputedStyle = () => mockStyleObj;
+
+      const mockEl = {
+        offsetWidth: 100,
+        offsetHeight: 50,
+        getClientRects: () => [1]
+      };
+
+      // toBeVisible positive case
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(mockEl).toBeVisible();
+      });
+
+      // toBeVisible failure case when display is 'none'
+      mockStyleObj.display = 'none';
+      nodeAssert.throws(() => {
+        jlExpect(mockEl).toBeVisible();
+      }, /Expected element to be visible/);
+
+      // toHaveStyle case
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(mockEl).toHaveStyle({ backgroundColor: 'red', fontSize: '16px' });
+      });
+
+      nodeAssert.throws(() => {
+        jlExpect(mockEl).toHaveStyle({ backgroundColor: 'blue' });
+      }, /Expected background-color to be "blue"/);
+
+      // toHaveFocus failure case
+      globalThis.document.activeElement = null;
+      nodeAssert.throws(() => {
+        jlExpect(mockEl).toHaveFocus();
+      }, /Expected element to have focus/);
+
+      globalThis.window.getComputedStyle = originalGetComputedStyle;
+    });
+
+    nodeIt('guards module registry against missing mocks and un-factored registration', () => {
+      // Non-existent module request
+      let caughtError = null;
+      try {
+        requireMock('unregistered_module_xyz_12345');
+      } catch (e) {
+        caughtError = e;
+      }
+      nodeAssert.match(caughtError?.message || '', /is not mocked/);
+
+      // Default mock factory handling
+      mock('empty_factory_module');
+      nodeAssert.deepEqual(requireMock('empty_factory_module'), {});
+    });
+
+    nodeIt('properly handles spy exceptions without corrupting restoration state', () => {
+      const service = {
+        danger() { return 'safe'; }
+      };
+
+      const spy = jlSpyOn(service, 'danger');
+      spy.mockImplementation(() => {
+        throw new Error('boom');
+      });
+
+      nodeAssert.throws(() => {
+        service.danger();
+      }, /boom/);
+
+      // Verify return history recorded undefined for thrown exception
+      nodeAssert.equal(spy.mock.returns.length, 1);
+      nodeAssert.equal(spy.mock.returns[0], undefined);
+
+      // Ensure mockRestore cleanly restores original method
+      spy.mockRestore();
+      nodeAssert.equal(service.danger(), 'safe');
+    });
+
+    nodeIt('handles expect.any with Boolean, Date, and Function constructors', () => {
+      jlExpect(true).toEqual(globalThis.jest.expect.any(Boolean));
+      jlExpect(new Date()).toEqual(globalThis.jest.expect.any(Date));
+      jlExpect(() => {}).toEqual(globalThis.jest.expect.any(Function));
+
+      nodeAssert.throws(() => {
+        jlExpect('not_a_boolean').toEqual(globalThis.jest.expect.any(Boolean));
+      });
+    });
+
+    nodeIt('handles invalid target inputs to arrayContaining and objectContaining safely', () => {
+      // arrayContaining against non-array actual
+      nodeAssert.throws(() => {
+        jlExpect('not_an_array').toEqual(globalThis.jest.expect.arrayContaining(['item']));
+      });
+
+      // objectContaining against null or non-object actual
+      nodeAssert.throws(() => {
+        jlExpect(null).toEqual(globalThis.jest.expect.objectContaining({ a: 1 }));
+      });
+    });
+
+    nodeIt('handles circular reference objects inside toMatchSnapshot without throwing stack overflows', () => {
+      const circular = { name: 'circular_test' };
+      circular.self = circular;
+
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(circular).toMatchSnapshot('circular_object_snapshot_test');
+      });
+    });
+
+    nodeIt('verifies waitFor timeout rejection carries internal assertion failure message', async () => {
+      await nodeAssert.rejects(
+        async () => {
+          const waitForFn = globalThis.jest.waitFor || globalThis.waitFor;
+          await waitForFn(() => {
+            throw new Error('custom_polling_error');
+          }, { timeout: 100, interval: 20 });
+        },
+        /waitFor timed out after 100ms. Last internal runner exception was: custom_polling_error/
+      );
+    });
+
   });
 
 });
