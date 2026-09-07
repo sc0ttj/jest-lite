@@ -307,7 +307,6 @@
     return false;
   }
 
-
   // --- Expect & Matchers ---
   let matchers = (actual) => ({
     toBe: (expected) => {
@@ -503,13 +502,9 @@
       }
     },
 
-
-    // Snapshot Matcher
-    // Add to your matchers object
     toMatchSnapshot: () => {
       countAssertion(); // <--- Add this to every matcher
       const key = getSnapshotKey();
-      const existing = localStorage.getItem(key);
       let serialized;
 
       // Circular-safe stringify
@@ -522,24 +517,83 @@
           }
           return v;
         }, 2);
-      } catch (e) { serialized = "[Unserializable]"; }
+      } catch (e) {
+        serialized = "[Unserializable]";
+      }
 
-      // Check for global update flag: window.updateSnapshots = true
-      if (existing === null || window.updateSnapshots) {
-        localStorage.setItem(key, serialized);
+      // Environmental Discovery Layer
+      const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
+
+      // Setup isomorphic storage handlers
+      const getStoredSnapshot = () => {
+        if (isNode) {
+          try {
+            const fs = esmRequire('fs');
+            const path = esmRequire('path');
+            const snapPath = path.join(process.cwd(), '__snapshots__', 'jest-lite.snap');
+            if (fs.existsSync(snapPath)) {
+              const fileContent = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+              return fileContent[key] !== undefined ? fileContent[key] : null;
+            }
+          } catch (e) { return null; }
+        }
+        if (typeof localStorage !== 'undefined') {
+          return localStorage.getItem(key);
+        }
+        return globalThis._fallbackSnapCache ? globalThis._fallbackSnapCache[key] : null;
+      };
+
+      const writeStoredSnapshot = (valueStr) => {
+        if (isNode) {
+          try {
+            const fs = esmRequire('fs');
+            const path = esmRequire('path');
+            const snapDir = path.join(process.cwd(), '__snapshots__');
+            if (!fs.existsSync(snapDir)) fs.mkdirSync(snapDir, { recursive: true });
+
+            const snapPath = path.join(snapDir, 'jest-lite.snap');
+            let snaps = {};
+            if (fs.existsSync(snapPath)) {
+              try { snaps = JSON.parse(fs.readFileSync(snapPath, 'utf8')); } catch (e) { snaps = {}; }
+            }
+            snaps[key] = valueStr;
+            fs.writeFileSync(snapPath, JSON.stringify(snaps, null, 2), 'utf8');
+            return;
+          } catch (e) { /* Fallback to storage on file failure */ }
+        }
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(key, valueStr);
+        } else {
+          if (!globalThis._fallbackSnapCache) globalThis._fallbackSnapCache = {};
+          globalThis._fallbackSnapCache[key] = valueStr;
+        }
+      };
+
+      const existing = getStoredSnapshot();
+      // Check for global update flag across standard namespaces
+      const shouldUpdate = typeof window !== 'undefined' ? window.updateSnapshots : globalThis.updateSnapshots;
+
+      if (existing === null || shouldUpdate) {
+        writeStoredSnapshot(serialized);
         console.log(`%c[Snapshot Saved]: %c${key}`, 'font-weight:bold; color: #2980b9', 'color: #7f8c8d');
+        snapshotIndex++;
         return;
       }
 
       if (existing !== serialized) {
         console.groupCollapsed(`%c❌ Snapshot Mismatch: ${key}`, 'color: #e74c3c; font-weight: bold');
-        console.log('%cExpected:', 'color: #27ae60', JSON.parse(existing));
-        console.log('%cReceived:', 'color: #c0392b', JSON.parse(serialized));
+        try {
+          console.log('%cExpected:', 'color: #27ae60', JSON.parse(existing));
+          console.log('%cReceived:', 'color: #c0392b', JSON.parse(serialized));
+        } catch (e) {
+          console.log('%cExpected:', 'color: #27ae60', existing);
+          console.log('%cReceived:', 'color: #c0392b', serialized);
+        }
         console.log('%cFix:', 'color: #8e44ad', `Run: window.updateSnapshots = true; run();`);
         console.groupEnd();
         throw new Error(`Snapshot mismatch for ${key}`);
       }
-      
+
       console.log(`%c  [Snapshot Matched]`, 'color: #7f8c8d; font-style: italic');
       snapshotIndex++;
     },
@@ -1015,7 +1069,16 @@
   }
 
 
-
+  // Setup a safe isomorphic CommonJS bridge for Node.js ES Modules
+  let esmRequire;
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    try {
+      const { createRequire } = await import('module');
+      esmRequire = createRequire(import.meta.url);
+    } catch (e) {
+      // Fallback if compilation environment dynamically restricts imports
+    }
+  }
 
   const globalScope = typeof window !== 'undefined' ? window : globalThis;
 

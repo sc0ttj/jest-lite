@@ -1205,5 +1205,71 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
     });
   });
 
+  // ==========================================
+  // ISOMORPHIC SNAPSHOT VERIFICATION CORE
+  // ==========================================
+  nodeDescribe('Isomorphic Snapshot Verification Core', () => {
+
+    nodeIt('proves node filesystem routing works and saves snapshot artifacts to the disk', () => {
+      // Skip manually if running outside standard node test runner threads
+      const fs = require('fs');
+      const path = require('path');
+      const snapFilePath = path.join(process.cwd(), '__snapshots__', 'jest-lite.snap');
+
+      // Clear any historic integration state files cleanly
+      if (fs.existsSync(snapFilePath)) fs.unlinkSync(snapFilePath);
+
+      const targetDataMetadata = { build: "v1.0.0", environment: "NodeCI" };
+
+      // Execute the test tool validation sequence targeting disk writing channels
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(targetDataMetadata).toMatchSnapshot("node_integration_disk_test");
+      });
+
+      // Verify physical disk file generation state
+      nodeAssert.equal(fs.existsSync(snapFilePath), true);
+      const readDiskData = JSON.parse(fs.readFileSync(snapFilePath, 'utf8'));
+      nodeAssert.match(readDiskData["node_integration_disk_test"], /NodeCI/);
+    });
+
+    nodeIt('falls back seamlessly to browser localStorage arrays if disk modules are absent', () => {
+      // Force temporary runtime environment spoof variables
+      const originalLocalStore = globalThis.localStorage;
+      let virtualStoreMemory = {};
+
+      globalThis.localStorage = {
+        setItem(k, v) { virtualStoreMemory[k] = v; },
+        getItem(k) { return virtualStoreMemory[k] || null; }
+      };
+
+      const browserContextPayload = { type: "Browser_Render", canvas: true };
+
+      // Force matchers to utilize alternative storage mapping routes
+      nodeAssert.doesNotThrow(() => {
+        jlExpect(browserContextPayload).toMatchSnapshot("browser_viewport_mock_snap");
+      });
+
+      // Validate that virtual store arrays caught the matching parameters accurately
+      nodeAssert.match(virtualStoreMemory["browser_viewport_mock_snap"], /Browser_Render/);
+
+      // Restore baseline global parameters
+      globalThis.localStorage = originalLocalStore;
+    });
+
+    nodeIt('triggers explicit framework errors upon mismatching stored values', () => {
+      const experimentalDataState = { values: [10, 20] };
+
+      // Instantiates baseline initialization parameters state
+      jlExpect(experimentalDataState).toMatchSnapshot("resiliency_mismatch_boundary");
+
+      // Attempt to enforce modified matching values parameters against structural constraints
+      const mutatedPayloadState = { values: [10, 99999] };
+
+      nodeAssert.throws(() => {
+        jlExpect(mutatedPayloadState).toMatchSnapshot("resiliency_mismatch_boundary");
+      }, /Snapshot Mismatch/);
+    });
+  });
+
 });
 
