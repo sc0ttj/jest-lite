@@ -1,16 +1,28 @@
 {
-  "name": "jest-lite",
+  "name": "@sc0ttj/jest-lite",
   "version": "1.0.0",
-  "description": "An isomorphic test suite with a mostly Jest-compatible API.",
+  "description": "A zero-runtime-dependency, Jest-compatible test runner for modern Node.js and browsers.",
   "type": "module",
   "main": "jest-lite.js",
+  "module": "jest-lite.js",
+  "browser": "jest-lite.js",
   "exports": {
     ".": {
       "import": "./jest-lite.js"
     }
   },
+  "files": [
+    "jest-lite.js",
+    "README.md",
+    "AGENT.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "test:package": "node scripts/package-smoke.mjs",
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "test:all": "npm test && npm run test:package && npm run test:browser"
   },
   "keywords": [
     "testing",
@@ -23,7 +35,22 @@
   ],
   "author": "sc0ttj",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sc0ttj/jest-lite.git"
+  },
+  "homepage": "https://github.com/sc0ttj/jest-lite#readme",
+  "bugs": {
+    "url": "https://github.com/sc0ttj/jest-lite/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
-    "axios": "^1.16.1"
+    "axios": "^1.20.0",
+    "playwright": "^1.55.0"
   }
 }

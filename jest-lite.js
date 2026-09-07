@@ -1,1152 +1,2258 @@
 /**
  * JEST-LITE: A Lightweight, Isomorphic Test Suite
  * --------------------------------------------------
- * 
+ *
  * CORE API:
  * - describe(name, cb): Groups tests into suites. Supports nesting.
- * - it(name, fn): Defines a test case. Supports async/await.
- * - it.only(name, fn): Runs only this test (and others marked .only).
- * - it.skip(name, fn): Skips the test case.
- * - it.each(table)(name, fn): Data-driven testing with %i, %s, %o interpolation.
- * 
+ * - describe.only / describe.skip / describe.each: Suite level focus, exclusion and data tables.
+ *   Suite modes cascade down to every descendant suite and test.
+ * - it(name, fn, timeout) / test(name, fn, timeout): Defines a test case. Supports
+ *   async/await. Optional `timeout` (ms, default 5000) fails the test if it does not
+ *   settle in time; enforced with a real timer so fake timers can never disable it.
+ * - it.only / it.skip / it.todo / it.each (and the identical `test.*` aliases) all
+ *   accept the same trailing `timeout` argument (`.each` forwards it per-row).
+ * - it.each(table)(name, fn, timeout): Data-driven testing. Accepts an array table
+ *   (rows of arrays, or rows of single values/objects) or a tagged template literal.
+ *   Names interpolate %s, %i, %d, %f, %j, %o, %p, %# and $property tokens.
+ *
  * LIFECYCLE HOOKS:
- * - beforeAll / afterAll: Runs once per describe block.
- * - beforeEach / afterEach: Runs before/after every test; inherits from parent suites.
- * 
+ * - beforeAll(fn, timeout) / afterAll(fn, timeout): Runs once per describe block.
+ * - beforeEach(fn, timeout) / afterEach(fn, timeout): Runs before/after every test;
+ *   inherits from parent suites.
+ * - Each hook accepts the same optional `timeout` (ms, default 5000) as tests.
+ * - Hook failures are reported as test failures; execution continues where sensible.
+ *
  * EXPECT & MATCHERS:
  * - expect(actual): Core assertion entry point.
- * - .not: Chainable modifier to invert any matcher logic.
- * - toBe / toEqual: Reference and recursive deep-equality matching.
+ * - .not: Chainable modifier to invert any matcher logic. Only assertion failures are
+ *   inverted; matcher misuse (TypeError etc.) always propagates.
+ * - .resolves / .rejects: Await a promise then apply any matcher to its value/reason.
+ * - toBe / toEqual / toStrictEqual: Identity, structural and strict structural equality.
  * - toBeDefined / toBeUndefined / toBeNull / toBeEmpty: Nullability and length checks.
  * - toBeTruthy / toBeFalsy: Boolean evaluation.
  * - toBeGreaterThan / toBeLessThan (and OrEqual variants): Numeric comparisons.
  * - toBeCloseTo: Floating point comparison using configurable precision.
- * - toContain: Checks for items in arrays or substrings in strings.
- * - toMatch: Regular expression string validation.
- * - toThrow: Validates that a function throws an error (optionally matching message).
+ * - toContain / toContainEqual: Identity or deep-equality collection membership.
+ * - toHaveLength: Length/size assertions for strings, arrays, Map/Set and array-likes.
+ * - toMatch: String/RegExp validation.
+ * - toThrow: Validates a thrown error against a string, RegExp, Error class or instance.
  * - toMatchObject: Partial object matching (checks subset of properties).
- * - toBeInstanceOf: Prototype chain/Class constructor validation.
- * - toBeType / toBeArray / toBeObject: Data type and structural checking.
+ * - toBeInstanceOf / toBeType / toBeArray / toBeObject: Type and structure checking.
  * - toStartWith / toEndWith: Specific string prefix/suffix validation.
- * 
+ * - expect.assertions(n) / expect.hasAssertions(): Assertion count contracts.
+ *
  * MOCKING & SPYING:
- * - fn(implementation): Creates a mock function that tracks calls and return values.
- * - spyOn(obj, method): Wraps an existing method; includes .mockRestore() to cleanup.
- * - toHaveBeenCalled / toHaveBeenCalledTimes: Call count validation.
- * - toHaveBeenCalledWith: Argument matching (supports Asymmetric Matchers).
- * - toHaveReturnedWith: Return value history validation.
- * 
+ * - jest.fn(implementation): Mock function tracking calls, contexts, instances and
+ *   Jest-shaped results (`{ type: 'return' | 'throw' | 'incomplete', value }`).
+ * - jest.spyOn(obj, method): Wraps an existing method; `.mockRestore()` reverts it.
+ * - jest.clearAllMocks / resetAllMocks / restoreAllMocks: Registry wide cleanup.
+ * - toHaveBeenCalled / toHaveBeenCalledTimes / toHaveBeenCalledWith /
+ *   toHaveBeenLastCalledWith / toHaveBeenNthCalledWith.
+ * - toHaveReturned / toHaveReturnedTimes / toHaveReturnedWith /
+ *   toHaveLastReturnedWith / toHaveNthReturnedWith.
+ *
  * ADVANCED FEATURES:
- * - toMatchSnapshot(): Persists state to localStorage; provides diffs on mismatch.
- * - expect.any(Constructor): Asymmetric matching for dynamic values (Number, String, etc.).
- * - Two-Phase Runner: Scans all suites for .only before execution begins.
+ * - toMatchSnapshot(): Persists state to disk (Node) or localStorage (browser).
+ *   Default keys are namespaced by the full suite path plus test name.
+ * - Asymmetric matchers: expect.any, expect.anything, expect.stringMatching,
+ *   expect.stringContaining, expect.arrayContaining, expect.objectContaining.
+ * - Fake timers: useFakeTimers / advanceTimersByTime / runAllTimers /
+ *   runOnlyPendingTimers / advanceTimersToNextTimer / clearAllTimers / getTimerCount.
+ * - Module registry: jest.mock/registerMock and jest.requireMock/getMock provide an
+ *   explicit in-memory registry. NOTE: this is a registry, NOT an import interceptor:
+ *   real `import`/`require` statements are never rewritten.
+ * - Two-Phase Runner: Scans all suites for `.only` before execution begins.
  * - Isomorphic: Runs identically in Node.js or the Browser DevTools console.
- * - Extensible: Global extendExpect() allows adding custom domain-specific matchers.
+ * - Extensible: expect.extend()/extendExpect() allows adding custom matchers.
  */
 
 
-await (async function() {
-  const moduleRegistry = new Map();
+await (async function () {
+  const globalScope = (typeof globalThis !== 'undefined')
+    ? globalThis
+    : (typeof window !== 'undefined' ? window : this);
 
-  const activeSpies = new Set();
-  const activeSpiesList = [];
+  // Captured immediately, before anything (including jest.useFakeTimers()) can ever
+  // monkey-patch globalScope.setTimeout/clearTimeout. Per-test/hook timeout enforcement
+  // always schedules against these, so fake timers can never disable a test's own timeout.
+  const REAL_SET_TIMEOUT = globalScope.setTimeout.bind(globalScope);
+  const REAL_CLEAR_TIMEOUT = globalScope.clearTimeout.bind(globalScope);
+
+  const isNodeRuntime = typeof process !== 'undefined'
+    && !!process.versions
+    && !!process.versions.node;
+
+  // Safe isomorphic CommonJS bridge (Node only, loaded dynamically so browsers never see it).
+  let esmRequire = null;
+  if (isNodeRuntime) {
+    try {
+      const { createRequire } = await import('module');
+      esmRequire = createRequire(import.meta.url);
+    } catch (e) {
+      esmRequire = null;
+    }
+  }
+
+  // ==========================================================================
+  // 1. ERROR CONTRACTS
+  // ==========================================================================
 
   /**
-   * Global Restorer: Iterates through all tracked spies 
-   * and calls their mockRestore method.
+   * Thrown by every built-in and custom matcher when an expectation fails.
+   * `.not` only inverts errors carrying this contract, so genuine matcher bugs
+   * (TypeError, ReferenceError, misuse errors, ...) are never silently swallowed.
    */
-  const mockRestoreAll = () => {
-    activeSpies.forEach(spy => {
-      if (typeof spy.mockRestore === 'function') {
-        spy.mockRestore();
+  class JestLiteAssertionError extends Error {
+    constructor(message, details = {}) {
+      super(message);
+      this.name = 'JestLiteAssertionError';
+      this.isJestLiteAssertionError = true;
+      this.matcherName = details.matcherName;
+      this.actual = details.actual;
+      this.expected = details.expected;
+    }
+  }
+
+  const assertionError = (message, details) => new JestLiteAssertionError(message, details);
+  const isAssertionError = (error) => !!error && error.isJestLiteAssertionError === true;
+
+  /** Misuse of the framework itself (wrong argument types, non-mock received, ...). */
+  const usageError = (message) => new TypeError(`[jest-lite] ${message}`);
+
+  // ==========================================================================
+  // 2. VALUE FORMATTING
+  // ==========================================================================
+
+  const MAX_PRINT_LENGTH = 400;
+
+  const printValue = (value, seen = new WeakSet()) => {
+    if (value === null) return 'null';
+    const type = typeof value;
+    if (type === 'undefined') return 'undefined';
+    if (type === 'number' || type === 'boolean') return String(value);
+    if (type === 'bigint') return `${value}n`;
+    if (type === 'symbol') return value.toString();
+    if (type === 'string') return JSON.stringify(value);
+    if (type === 'function') {
+      if (value._isMockFunction) return `[MockFunction ${value.getMockName()}]`;
+      return `[Function ${value.name || 'anonymous'}]`;
+    }
+    if (isAsymmetricMatcher(value)) return String(value);
+    if (value instanceof Error) return `[${value.name}: ${value.message}]`;
+    if (value instanceof Date) return `Date(${isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString()})`;
+    if (value instanceof RegExp) return value.toString();
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return `[${value.map(item => printValue(item, seen)).join(', ')}]`;
       }
-    });
-    activeSpies.clear();
+      if (typeof Set !== 'undefined' && value instanceof Set) {
+        return `Set {${[...value].map(item => printValue(item, seen)).join(', ')}}`;
+      }
+      if (typeof Map !== 'undefined' && value instanceof Map) {
+        return `Map {${[...value].map(([k, v]) => `${printValue(k, seen)} => ${printValue(v, seen)}`).join(', ')}}`;
+      }
+      const prefix = value.constructor && value.constructor.name && value.constructor.name !== 'Object'
+        ? `${value.constructor.name} `
+        : '';
+      const body = Object.keys(value)
+        .map(key => `${key}: ${printValue(value[key], seen)}`)
+        .join(', ');
+      return `${prefix}{${body}}`;
+    } finally {
+      seen.delete(value);
+    }
   };
 
-  let assertionCount = 0;
-  let expectedAssertions = null;
+  const truncate = (text) => (text.length > MAX_PRINT_LENGTH
+    ? `${text.slice(0, MAX_PRINT_LENGTH)}…`
+    : text);
 
-  // Add this helper to your matchers (call it at the start of every matcher)
-  const countAssertion = () => {
-    assertionCount++;
-  };
-  const createSuite = (name = 'root') => ({
-    name, tests: [], suites: [], 
-    beforeAll: [], afterAll: [], beforeEach: [], afterEach: []
+  const print = (value) => truncate(printValue(value));
+
+  // ==========================================================================
+  // 3. ASYMMETRIC MATCHERS
+  // ==========================================================================
+
+  const ASYMMETRIC_BRAND = 'jest-lite.asymmetricMatcher';
+
+  /**
+   * Only objects explicitly created by expect.* helpers (or third parties honouring
+   * the `asymmetricMatch` contract) count as asymmetric matchers. Arbitrary objects
+   * exposing an unrelated `.test()` method are treated as plain data.
+   */
+  const isAsymmetricMatcher = (value) => !!value
+    && (typeof value === 'object' || typeof value === 'function')
+    && typeof value.asymmetricMatch === 'function';
+
+  const createAsymmetricMatcher = (label, asymmetricMatch) => ({
+    $$typeof: ASYMMETRIC_BRAND,
+    asymmetricMatch,
+    toString: () => label,
+    toJSON: () => label,
   });
 
-  let rootSuite = createSuite();
-  let currentSuite = rootSuite;
-  let snapshotIndex = 0;
-  let currentTestName = "";
+  // ==========================================================================
+  // 4. EQUALITY ENGINE
+  // ==========================================================================
 
-  // Helper to interpolate strings like "adds %i and %i"
-  const interpolate = (str, args) => {
-    let i = 0;
-    return str.replace(/%[isdfoj]/g, () => {
-      const val = args[i++];
-      return typeof val === 'object' ? JSON.stringify(val) : val;
-    });
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  const comparableKeys = (obj, strict) => {
+    const keys = Object.keys(obj);
+    return strict ? keys : keys.filter(key => obj[key] !== undefined);
   };
 
-  const it = (name, fn) => currentSuite.tests.push({ name, fn, mode: 'run' });
-  
-  // The .each implementation
-  it.each = (table) => (name, fn) => {
-    table.forEach(row => {
-      // Ensure row is an array even if single values are passed
-      const args = Array.isArray(row) ? row : [row];
-      const interpolatedName = interpolate(name, args);
-      
-      // Push a new test for every row of data
-      currentSuite.tests.push({ 
-        name: interpolatedName, 
-        fn: () => fn(...args), 
-        mode: 'run' 
-      });
-    });
-  };
+  /**
+   * Structural equality.
+   * @param {*} a received value
+   * @param {*} b expected value (may be an asymmetric matcher)
+   * @param {boolean} strict when true, constructors/prototypes and `undefined`
+   *        valued keys and array holes are significant (toStrictEqual semantics).
+   */
+  const equals = (a, b, strict = false) => deepEquals(a, b, strict, []);
 
-  it.only = (name, fn) => currentSuite.tests.push({ name, fn, mode: 'only' });
-  it.skip = (name, fn) => currentSuite.tests.push({ name, fn, mode: 'skip' });
+  function deepEquals(a, b, strict, pairs) {
+    if (isAsymmetricMatcher(b)) return !!b.asymmetricMatch(a);
+    if (isAsymmetricMatcher(a)) return !!a.asymmetricMatch(b);
 
-  // --- Mocking & Spying ---
-  const fn = (implementation = () => {}) => {
-    const mockFn = (...args) => {
-      // 1. Get the current implementation (either a "Once" override or the default)
-      const currentImpl = mockFn.mock._once.shift() || mockFn.mock._default;
-      const result = currentImpl(...args);
-      
-      // 2. Track calls and results
-      mockFn.mock.calls.push(args);
-      mockFn.mock.results.push(result);
-      return result;
-    };
+    if (Object.is(a, b)) return true;
 
-    mockFn.mock = { calls: [], results: [], _once: [], _default: implementation };
+    if (a === null || b === null) return false;
+    if (typeof a !== 'object' || typeof b !== 'object') return false;
 
-    // Core Configuration Methods
-    mockFn.mockImplementation = (newImpl) => { mockFn.mock._default = newImpl; return mockFn; };
-    mockFn.mockImplementationOnce = (newImpl) => { mockFn.mock._once.push(newImpl); return mockFn; };
-    
-    // Return Value Sugar
-    mockFn.mockReturnValue = (val) => mockFn.mockImplementation(() => val);
-    mockFn.mockReturnValueOnce = (val) => mockFn.mockImplementationOnce(() => val);
+    // Pair-based cycle tracking: only the *same* (a, b) combination short-circuits.
+    for (let i = 0; i < pairs.length; i++) {
+      if (pairs[i][0] === a && pairs[i][1] === b) return true;
+    }
+    pairs.push([a, b]);
 
-    // Promise Sugar
-    mockFn.mockResolvedValue = (val) => mockFn.mockImplementation(() => Promise.resolve(val));
-    mockFn.mockResolvedValueOnce = (val) => mockFn.mockImplementationOnce(() => Promise.resolve(val));
-    mockFn.mockRejectedValue = (err) => mockFn.mockImplementation(() => Promise.reject(err));
+    try {
+      if (a instanceof Date || b instanceof Date) {
+        return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
+      }
+      if (a instanceof RegExp || b instanceof RegExp) {
+        return a instanceof RegExp && b instanceof RegExp
+          && a.source === b.source && a.flags === b.flags;
+      }
+      if (a instanceof Error || b instanceof Error) {
+        if (!(a instanceof Error && b instanceof Error)) return false;
+        if (strict && a.constructor !== b.constructor) return false;
+        return a.name === b.name && a.message === b.message;
+      }
 
-    // Reset Helpers
-    mockFn.mockClear = () => { mockFn.mock.calls = []; mockFn.mock.results = []; return mockFn; };
-    
-    return mockFn;
-  };
-
-  function spyOn(obj, method) {
-    const original = obj[method];
-    const hasOwnOriginal = Object.prototype.hasOwnProperty.call(obj, method);
-
-    const mockFn = (...args) => {
-      mockFn.mock.calls.push(args);
-      let result;
-      try {
-        if (mockFn._implementation) {
-          result = mockFn._implementation(...args);
-        } else if (original) {
-          result = original.apply(obj, args);
+      const aIsArray = Array.isArray(a);
+      const bIsArray = Array.isArray(b);
+      if (aIsArray !== bIsArray) return false;
+      if (aIsArray) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+          if (strict && hasOwn(a, i) !== hasOwn(b, i)) return false;
+          if (!deepEquals(a[i], b[i], strict, pairs)) return false;
         }
-        mockFn.mock.returns.push(result);
-        return result;
+        return true;
+      }
+
+      if (typeof Set !== 'undefined' && (a instanceof Set || b instanceof Set)) {
+        if (!(a instanceof Set && b instanceof Set)) return false;
+        if (a.size !== b.size) return false;
+        const remaining = [...b];
+        for (const itemA of a) {
+          const index = remaining.findIndex(itemB => deepEquals(itemA, itemB, strict, pairs));
+          if (index === -1) return false;
+          remaining.splice(index, 1);
+        }
+        return true;
+      }
+
+      if (typeof Map !== 'undefined' && (a instanceof Map || b instanceof Map)) {
+        if (!(a instanceof Map && b instanceof Map)) return false;
+        if (a.size !== b.size) return false;
+        const remaining = [...b];
+        for (const [keyA, valueA] of a) {
+          const index = remaining.findIndex(([keyB, valueB]) =>
+            deepEquals(keyA, keyB, strict, pairs) && deepEquals(valueA, valueB, strict, pairs));
+          if (index === -1) return false;
+          remaining.splice(index, 1);
+        }
+        return true;
+      }
+
+      if (strict) {
+        if (a.constructor !== b.constructor) return false;
+        if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+      }
+
+      const keysA = comparableKeys(a, strict);
+      const keysB = comparableKeys(b, strict);
+      if (keysA.length !== keysB.length) return false;
+
+      return keysA.every(key =>
+        (hasOwn(b, key) || b[key] !== undefined) && deepEquals(a[key], b[key], strict, pairs));
+    } finally {
+      pairs.pop();
+    }
+  }
+
+  /** Partial (subset) matching used by toMatchObject and objectContaining. */
+  const matchesSubset = (received, expected) => {
+    if (isAsymmetricMatcher(expected)) return !!expected.asymmetricMatch(received);
+    if (Array.isArray(expected)) {
+      if (!Array.isArray(received) || received.length !== expected.length) return false;
+      return expected.every((item, index) => matchesSubset(received[index], item));
+    }
+    if (expected && typeof expected === 'object' && !(expected instanceof Date)
+      && !(expected instanceof RegExp) && !(expected instanceof Error)) {
+      if (!received || typeof received !== 'object') return false;
+      return Object.keys(expected).every(key => matchesSubset(received[key], expected[key]));
+    }
+    return equals(received, expected, false);
+  };
+
+  // ==========================================================================
+  // 5. MOCK & SPY ENGINE
+  // ==========================================================================
+
+  /** Single registry for every spy created by jest.spyOn (restored after each test). */
+  const activeSpies = new Set();
+  /** Registry of every mock function created by jest.fn / jest.spyOn. */
+  const allMocks = new Set();
+
+  const isClassImplementation = (impl) => typeof impl === 'function'
+    && /^\s*class[\s{]/.test(Function.prototype.toString.call(impl));
+
+  const createMockFunction = (implementation, config = {}) => {
+    const {
+      mockName = 'jest.fn()',
+      onRestore = null,
+      originalImplementation = null,
+      isSpy = false,
+    } = config;
+
+    const mockFn = function (...args) {
+      const state = mockFn.mock;
+      const impl = state._once.length > 0 ? state._once.shift() : state._default;
+      const resultEntry = { type: 'incomplete', value: undefined };
+      const constructing = new.target !== undefined;
+
+      state.calls.push(args);
+      state.results.push(resultEntry);
+      state.contexts.push(this);
+
+      try {
+        let value;
+        if (typeof impl !== 'function') {
+          value = undefined;
+        } else if (constructing && isClassImplementation(impl)) {
+          value = Reflect.construct(impl, args, new.target);
+        } else {
+          // `apply` preserves the runtime `this` (method calls, .call/.apply, new).
+          value = impl.apply(this, args);
+        }
+        resultEntry.type = 'return';
+        resultEntry.value = value;
+        state.returns.push(value);
+        if (constructing) {
+          state.instances.push(value && typeof value === 'object' ? value : this);
+        }
+        return value;
       } catch (error) {
-        mockFn.mock.returns.push(undefined);
+        resultEntry.type = 'throw';
+        resultEntry.value = error;
+        state.returns.push(undefined);
+        if (constructing) state.instances.push(this);
         throw error;
       }
     };
 
-    mockFn.mock = { calls: [], returns: [] };
-    mockFn._implementation = null;
-
-    // Clear historical stacks cleanly matching Jest rules
-    mockFn.mockClear = () => {
-      mockFn.mock.calls = [];
-      mockFn.mock.returns = [];
+    mockFn.mock = {
+      calls: [],
+      results: [],
+      instances: [],
+      contexts: [],
+      // Legacy convenience view: the raw returned values (undefined for throwing calls).
+      returns: [],
+      _once: [],
+      _default: implementation,
     };
 
-    mockFn.mockImplementation = (fn) => { mockFn._implementation = fn; return mockFn; };
-    mockFn.mockReturnValue = (val) => { mockFn._implementation = () => val; return mockFn; };
-    mockFn.mockResolvedValue = (val) => { mockFn._implementation = () => Promise.resolve(val); return mockFn; };
+    Object.defineProperty(mockFn.mock, 'lastCall', {
+      configurable: true,
+      enumerable: false,
+      get() { return mockFn.mock.calls[mockFn.mock.calls.length - 1]; },
+    });
+
+    mockFn._isMockFunction = true;
+    mockFn._isSpy = isSpy;
+    mockFn._mockName = mockName;
+
+    mockFn.mockImplementation = (newImpl) => { mockFn.mock._default = newImpl; return mockFn; };
+    mockFn.mockImplementationOnce = (newImpl) => { mockFn.mock._once.push(newImpl); return mockFn; };
+    mockFn.getMockImplementation = () => mockFn.mock._default;
+
+    mockFn.mockReturnValue = (value) => mockFn.mockImplementation(() => value);
+    mockFn.mockReturnValueOnce = (value) => mockFn.mockImplementationOnce(() => value);
+    mockFn.mockReturnThis = () => mockFn.mockImplementation(function () { return this; });
+
+    mockFn.mockResolvedValue = (value) => mockFn.mockImplementation(() => Promise.resolve(value));
+    mockFn.mockResolvedValueOnce = (value) => mockFn.mockImplementationOnce(() => Promise.resolve(value));
+    mockFn.mockRejectedValue = (error) => mockFn.mockImplementation(() => Promise.reject(error));
+    mockFn.mockRejectedValueOnce = (error) => mockFn.mockImplementationOnce(() => Promise.reject(error));
+
+    mockFn.mockName = (name) => { mockFn._mockName = String(name); return mockFn; };
+    mockFn.getMockName = () => mockFn._mockName;
+
+    mockFn.mockClear = () => {
+      mockFn.mock.calls.length = 0;
+      mockFn.mock.results.length = 0;
+      mockFn.mock.instances.length = 0;
+      mockFn.mock.contexts.length = 0;
+      mockFn.mock.returns.length = 0;
+      return mockFn;
+    };
+
+    mockFn.mockReset = () => {
+      mockFn.mockClear();
+      mockFn.mock._once.length = 0;
+      // Spies fall back to the original method, plain mocks become no-ops.
+      mockFn.mock._default = isSpy ? originalImplementation : undefined;
+      return mockFn;
+    };
 
     mockFn.mockRestore = () => {
-      if (hasOwnOriginal) {
-        obj[method] = original;
-      } else {
-        delete obj[method];
-      }
-      // Remove from tracking registry on restore
-      const index = activeSpiesList.indexOf(mockFn);
-      if (index > -1) activeSpiesList.splice(index, 1);
+      mockFn.mockReset();
+      if (typeof onRestore === 'function') onRestore();
+      return mockFn;
     };
 
-    // 2. Automatically record the active spy reference
-    activeSpiesList.push(mockFn);
-
-    obj[method] = mockFn;
+    allMocks.add(mockFn);
     return mockFn;
-  }
+  };
 
+  const fn = (implementation) => createMockFunction(implementation);
 
+  function spyOn(obj, method) {
+    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
+      throw usageError(`spyOn expects an object or function to spy on, but received ${print(obj)}`);
+    }
+    if (typeof method !== 'string' && typeof method !== 'symbol') {
+      throw usageError(`spyOn expects a property name, but received ${print(method)}`);
+    }
 
-  /**
-   * Asynchronously polls an assertion callback until it passes or timeouts.
-   * @param {Function} callback - An execution block holding your framework assertions.
-   * @param {Object} [options] - Optional configurations.
-   * @param {number} [options.timeout=1000] - Total delay window in milliseconds before a hard throw.
-   * @param {number} [options.interval=50] - Intermittent loop query latency in milliseconds.
-   * @return {Promise<void>}
-   */
-  async function waitFor(callback, options = {}) {
-    const timeout = options.timeout ?? 1000;
-    const interval = options.interval ?? 50;
-    const startTime = Date.now();
+    const original = obj[method];
+    if (typeof original !== 'function') {
+      throw usageError(
+        `Cannot spy on property "${String(method)}" because it is not a function (received ${typeof original})`
+      );
+    }
 
-    return new Promise((resolve, reject) => {
-      function check() {
-        try {
-          // Execute the consumer assertion block
-          callback();
-          return resolve(); // Success path: if no exceptions are thrown, settle the promise immediately
-        } catch (lastError) {
-          // Fallback boundary path: check if our total allocation window has expired
-          if (Date.now() - startTime >= timeout) {
-            return reject(
-              new Error(`waitFor timed out after ${timeout}ms. Last internal runner exception was: ${lastError.message}`)
-            );
-          }
-          // If time remains, schedule the next macro-task iteration cycle
-          setTimeout(check, interval);
+    const hasOwnOriginal = hasOwn(obj, method);
+    // Preserve the runtime `this`: calling obj.method() still binds `this` to obj.
+    const originalImplementation = function (...args) { return original.apply(this, args); };
+
+    const spy = createMockFunction(originalImplementation, {
+      mockName: String(method),
+      isSpy: true,
+      originalImplementation,
+      onRestore: () => {
+        if (hasOwnOriginal) {
+          obj[method] = original;
+        } else {
+          delete obj[method];
         }
-      }
-      
-      // Initiate the first evaluation loop immediately
-      check();
+        activeSpies.delete(spy);
+      },
     });
+
+    spy._originalMethod = original;
+    activeSpies.add(spy);
+    obj[method] = spy;
+    return spy;
   }
 
+  /** Restores every spy created via jest.spyOn (also invoked automatically per test). */
+  const restoreAllMocks = () => {
+    [...activeSpies].forEach((spy) => {
+      if (typeof spy.mockRestore === 'function') spy.mockRestore();
+    });
+    activeSpies.clear();
+  };
 
-  // --- Helper: Snapshot Key Generation ---
-  const getSnapshotKey = () => `snap__${currentSuite.name}__${currentTestName}__${snapshotIndex}`;
+  const clearAllMocks = () => {
+    allMocks.forEach(mock => mock.mockClear());
+    moduleRegistry.forEach((moduleExports) => {
+      if (!moduleExports || typeof moduleExports !== 'object') return;
+      Object.values(moduleExports).forEach((value) => {
+        if (value && typeof value.mockClear === 'function') value.mockClear();
+      });
+    });
+  };
 
-  function deepEquals(a, b, seen = new Set()) {
-    // 1. Precise identity check (primitives, NaN, signed zeros)
-    if (Object.is(a, b)) return true;
+  const resetAllMocks = () => {
+    allMocks.forEach(mock => mock.mockReset());
+    moduleRegistry.forEach((moduleExports) => {
+      if (!moduleExports || typeof moduleExports !== 'object') return;
+      Object.values(moduleExports).forEach((value) => {
+        if (value && typeof value.mockReset === 'function') value.mockReset();
+      });
+    });
+  };
 
-    // 2. CRITICAL INTERCEPT: Check if 'b' is an asymmetric matcher
-    if (b && typeof b === 'object') {
-      if (typeof b.asymmetricMatch === 'function') {
-        return b.asymmetricMatch(a);
-      }
-      if (typeof b.test === 'function') {
-        return b.test(a);
-      }
-      // Safe guard: check if it's a jest-lite asymmetric matcher structure that uses a custom signature
-      if (b.constructor && b.constructor.name === 'Any' || b.sample) {
-        if (typeof b.asymmetricMatch === 'function') return b.asymmetricMatch(a);
+  const getMockState = (received, matcherName) => {
+    const state = typeof received === 'function' ? received.mock : undefined;
+    if (!state || !Array.isArray(state.calls)) {
+      throw usageError(
+        `${matcherName}: received value must be a mock or spy function, but received ${print(received)}`
+      );
+    }
+    return state;
+  };
+
+  const returnedValues = (state) => state.results
+    .filter(result => result.type === 'return')
+    .map(result => result.value);
+
+  // ==========================================================================
+  // 6. ASSERTION BOOKKEEPING
+  // ==========================================================================
+
+  let assertionCount = 0;
+  let expectedAssertions = null;
+  let requiresAssertions = false;
+
+  const countAssertion = () => { assertionCount++; };
+
+  const resetAssertionState = () => {
+    assertionCount = 0;
+    expectedAssertions = null;
+    requiresAssertions = false;
+  };
+
+  // ==========================================================================
+  // 7. SNAPSHOT STATE
+  // ==========================================================================
+
+  let snapshotIndex = 0;
+  let currentTestName = '';
+  let currentSuitePath = [];
+
+  const getSnapshotKey = () => {
+    const suitePath = currentSuitePath.length > 0 ? currentSuitePath.join(' > ') : 'root';
+    return `snap__${suitePath}__${currentTestName}__${snapshotIndex}`;
+  };
+
+  const SNAPSHOT_FILE = 'jest-lite.snap';
+
+  const useNodeSnapshotStorage = () => isNodeRuntime && !!esmRequire && !globalScope._forceBrowserStorage;
+
+  const readSnapshot = (key) => {
+    if (useNodeSnapshotStorage()) {
+      try {
+        const fs = esmRequire('fs');
+        const path = esmRequire('path');
+        const snapPath = path.join(process.cwd(), '__snapshots__', SNAPSHOT_FILE);
+        if (fs.existsSync(snapPath)) {
+          const stored = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+          return stored[key] !== undefined ? stored[key] : null;
+        }
+        return null;
+      } catch (e) {
+        return null;
       }
     }
+    if (typeof localStorage !== 'undefined') return localStorage.getItem(key);
+    return globalScope._fallbackSnapCache ? (globalScope._fallbackSnapCache[key] ?? null) : null;
+  };
 
-    // 3. Check if 'a' is an asymmetric matcher (in case the arguments are reversed)
-    if (a && typeof a === 'object') {
-      if (typeof a.asymmetricMatch === 'function') {
-        return a.asymmetricMatch(b);
-      }
-      if (typeof a.test === 'function') {
-        return a.test(b);
-      }
+  const writeSnapshot = (key, value) => {
+    if (useNodeSnapshotStorage()) {
+      try {
+        const fs = esmRequire('fs');
+        const path = esmRequire('path');
+        const snapDir = path.join(process.cwd(), '__snapshots__');
+        if (!fs.existsSync(snapDir)) fs.mkdirSync(snapDir, { recursive: true });
+        const snapPath = path.join(snapDir, SNAPSHOT_FILE);
+        let stored = {};
+        if (fs.existsSync(snapPath)) {
+          try { stored = JSON.parse(fs.readFileSync(snapPath, 'utf8')); } catch (e) { stored = {}; }
+        }
+        stored[key] = value;
+        fs.writeFileSync(snapPath, JSON.stringify(stored, null, 2), 'utf8');
+        return;
+      } catch (e) { /* fall through to web storage */ }
     }
-
-    // 4. Circular reference tracking to guard against stack overflows
-    if (a && typeof a === 'object' && b && typeof b === 'object') {
-      if (seen.has(a)) return true;
-      seen.add(a);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(key, value);
+      return;
     }
+    if (!globalScope._fallbackSnapCache) globalScope._fallbackSnapCache = {};
+    globalScope._fallbackSnapCache[key] = value;
+  };
 
-    // 5. Normal Type Enforcement Boundaries
-    if (typeof a !== typeof b) return false;
-    if (a === null || b === null) return a === b;
-
-    if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-    if (a instanceof RegExp && b instanceof RegExp) return a.toString() === b.toString();
-
-    // 6. Deep Array Validation Logic
-    if (Array.isArray(a) && Array.isArray(b)) {
-      if (a.length !== b.length) return false;
-      return a.every((val, i) => deepEquals(val, b[i], seen));
+  const serializeSnapshot = (value) => {
+    try {
+      const seen = new WeakSet();
+      const json = JSON.stringify(value, (key, val) => {
+        if (typeof val === 'object' && val !== null) {
+          if (seen.has(val)) return '[Circular]';
+          seen.add(val);
+        }
+        if (typeof val === 'function') return `[Function ${val.name || 'anonymous'}]`;
+        if (typeof val === 'undefined') return '[undefined]';
+        return val;
+      }, 2);
+      return json === undefined ? '[Unserializable]' : json;
+    } catch (e) {
+      return '[Unserializable]';
     }
+  };
 
-    // 7. Deep Object Structural Verification
-    if (typeof a === 'object') {
-      // Enforce prototype constructor blueprint matching
-      if (a.constructor !== b.constructor) return false;
+  // ==========================================================================
+  // 8. MATCHERS
+  // ==========================================================================
 
-      // Validate nested prototype chain alignment
-      // Ensures objects with modified or differing parent prototypes fail equality
-      if (!deepEquals(Object.getPrototypeOf(a), Object.getPrototypeOf(b), seen)) {
-        return false;
-      }
-
-      const keysA = Object.keys(a).filter(k => k !== 'asymmetricMatch' && k !== 'test');
-      const keysB = Object.keys(b).filter(k => k !== 'asymmetricMatch' && k !== 'test');
-
-      if (keysA.length !== keysB.length) return false;
-      return keysA.every(key => Object.hasOwn(b, key) && deepEquals(a[key], b[key], seen));
-    }
-
-    return false;
-  }
-
-  // --- Expect & Matchers ---
-  let matchers = (actual) => ({
+  const createMatchers = (actual) => {
+    const matchers = {
     toBe: (expected) => {
       countAssertion();
-      // Object.is matches exact identity semantics identical to official Jest
       if (!Object.is(actual, expected)) {
-        throw new Error(`Expected ${expected}, got ${actual}`);
-      }
-    },
-    toEqual: (exp) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!deepEquals(actual, exp)) {
-        throw new Error(`Expected ${JSON.stringify(exp)}, got ${JSON.stringify(actual)}`);
-      }
-    },
-    toBeDefined: () => { 
-      countAssertion(); // <--- Add this to every matcher
-      if (actual === undefined) throw new Error('Expected to be defined');
-    },
-    toBeUndefined: () => {
-      countAssertion(); // <--- Add this to every matcher
-      if (actual !== undefined) throw new Error(`Expected undefined, got ${actual}`);
-    },
-    toBeNull: () => { 
-      countAssertion(); // <--- Add this to every matcher
-      if (actual !== null) throw new Error(`Expected null, got ${actual}`);
-    },
-    toBeTruthy: () => { 
-      countAssertion(); // <--- Add this to every matcher
-      if (!actual) throw new Error('Expected truthy');
-    },
-    toBeFalsy: () => { 
-      countAssertion(); // <--- Add this to every matcher
-      if (actual) throw new Error('Expected falsy');
-    },
-    toBeWithinRange: (floor, ceiling) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (typeof actual !== 'number') {
-        throw new Error(`Expected a number, but got ${typeof actual}`);
-      }
-      if (actual < floor || actual > ceiling) {
-        throw new Error(`Expected ${actual} to be within range ${floor} - ${ceiling}`);
-      }
-    },
-
-    toBeOneOf: (collection) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!Array.isArray(collection)) {
-        throw new Error(`toBeOneOf expects an Array, but got ${typeof collection}`);
-      }
-      
-      // Use your existing deepEquals helper to support objects/asymmetric matchers in the list
-      const isPresent = collection.some(item => deepEquals(actual, item));
-      
-      if (!isPresent) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to be one of ${JSON.stringify(collection)}`
+        throw assertionError(
+          `Expected ${print(expected)}, got ${print(actual)}`,
+          { matcherName: 'toBe', actual, expected }
         );
       }
     },
 
-    toContain: (item) => { 
-      countAssertion(); // <--- Add this to every matcher
-      const isPresent = Array.isArray(actual) 
-        ? actual.some(i => JSON.stringify(i) === JSON.stringify(item)) 
-        : actual.includes(item);
-      if (!isPresent) throw new Error(`Collection does not contain ${JSON.stringify(item)}`); 
+    toEqual: (expected) => {
+      countAssertion();
+      if (!equals(actual, expected, false)) {
+        throw assertionError(
+          `Expected ${print(expected)}, got ${print(actual)}`,
+          { matcherName: 'toEqual', actual, expected }
+        );
+      }
+    },
+
+    toStrictEqual: (expected) => {
+      countAssertion();
+      if (!equals(actual, expected, true)) {
+        throw assertionError(
+          `Expected (strict) ${print(expected)}, got ${print(actual)}`,
+          { matcherName: 'toStrictEqual', actual, expected }
+        );
+      }
+    },
+
+    toBeDefined: () => {
+      countAssertion();
+      if (actual === undefined) throw assertionError('Expected to be defined');
+    },
+
+    toBeUndefined: () => {
+      countAssertion();
+      if (actual !== undefined) throw assertionError(`Expected undefined, got ${print(actual)}`);
+    },
+
+    toBeNull: () => {
+      countAssertion();
+      if (actual !== null) throw assertionError(`Expected null, got ${print(actual)}`);
+    },
+
+    toBeNaN: () => {
+      countAssertion();
+      if (!Number.isNaN(actual)) throw assertionError(`Expected NaN, got ${print(actual)}`);
+    },
+
+    toBeTruthy: () => {
+      countAssertion();
+      if (!actual) throw assertionError(`Expected truthy, got ${print(actual)}`);
+    },
+
+    toBeFalsy: () => {
+      countAssertion();
+      if (actual) throw assertionError(`Expected falsy, got ${print(actual)}`);
+    },
+
+    toBeWithinRange: (floor, ceiling) => {
+      countAssertion();
+      if (typeof actual !== 'number') {
+        throw assertionError(`Expected a number, but got ${typeof actual}`);
+      }
+      if (actual < floor || actual > ceiling) {
+        throw assertionError(`Expected ${actual} to be within range ${floor} - ${ceiling}`);
+      }
+    },
+
+    toBeOneOf: (collection) => {
+      countAssertion();
+      if (!Array.isArray(collection)) {
+        throw usageError(`toBeOneOf expects an Array, but got ${typeof collection}`);
+      }
+      if (!collection.some(item => equals(actual, item, false))) {
+        throw assertionError(`Expected ${print(actual)} to be one of ${print(collection)}`);
+      }
+    },
+
+    toContain: (item) => {
+      countAssertion();
+      if (typeof actual === 'string') {
+        if (typeof item !== 'string') {
+          throw usageError(`toContain: expected a string needle for a string haystack, got ${print(item)}`);
+        }
+        if (!actual.includes(item)) {
+          throw assertionError(`String ${print(actual)} does not contain ${print(item)}`);
+        }
+        return;
+      }
+      if (typeof Set !== 'undefined' && actual instanceof Set) {
+        if (!actual.has(item)) throw assertionError(`Set does not contain ${print(item)}`);
+        return;
+      }
+      if (!actual || typeof actual.length !== 'number') {
+        throw usageError(`toContain expects a string, array, Set or array-like, but received ${print(actual)}`);
+      }
+      const found = Array.prototype.some.call(actual, entry => Object.is(entry, item));
+      if (!found) throw assertionError(`Collection does not contain ${print(item)}`);
+    },
+
+    toContainEqual: (item) => {
+      countAssertion();
+      const iterable = (typeof Set !== 'undefined' && actual instanceof Set) ? [...actual] : actual;
+      if (!iterable || typeof iterable.length !== 'number') {
+        throw usageError(`toContainEqual expects an array, Set or array-like, but received ${print(actual)}`);
+      }
+      const found = Array.prototype.some.call(iterable, entry => equals(entry, item, false));
+      if (!found) throw assertionError(`Collection does not contain an item equal to ${print(item)}`);
+    },
+
+    toHaveLength: (expectedLength) => {
+      countAssertion();
+      if (typeof expectedLength !== 'number') {
+        throw usageError(`toHaveLength expects a number, but received ${print(expectedLength)}`);
+      }
+      let length;
+      if (actual && typeof actual.length === 'number') length = actual.length;
+      else if (actual && typeof actual.size === 'number') length = actual.size;
+      else {
+        throw usageError(`toHaveLength expects a value with a length or size, but received ${print(actual)}`);
+      }
+      if (length !== expectedLength) {
+        throw assertionError(`Expected length ${expectedLength}, got ${length}`);
+      }
     },
 
     toBeGreaterThan: (n) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (actual <= n) throw new Error(`Expected ${actual} > ${n}`);
+      countAssertion();
+      if (!(actual > n)) throw assertionError(`Expected ${print(actual)} > ${print(n)}`);
     },
+
     toBeLessThan: (n) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (actual >= n) throw new Error(`Expected ${actual} < ${n}`);
+      countAssertion();
+      if (!(actual < n)) throw assertionError(`Expected ${print(actual)} < ${print(n)}`);
     },
+
+    toBeGreaterThanOrEqual: (n) => {
+      countAssertion();
+      if (!(actual >= n)) throw assertionError(`Expected ${print(actual)} >= ${print(n)}`);
+    },
+
+    toBeLessThanOrEqual: (n) => {
+      countAssertion();
+      if (!(actual <= n)) throw assertionError(`Expected ${print(actual)} <= ${print(n)}`);
+    },
+
     toBeCloseTo: (num, precision = 2) => {
-      countAssertion(); // <--- Add this to every matcher
-      const isClose = Math.abs(actual - num) < Math.pow(10, -precision) / 2;
-      if (!isClose) throw new Error(`Expected ${actual} to be close to ${num}`);
-    },
-
-    toMatch: (regex) => {
-      countAssertion(); // <--- Add this to every matcher
-      const r = regex instanceof RegExp ? regex : new RegExp(regex);
-      if (!r.test(actual)) throw new Error(`"${actual}" did not match regex ${r}`);
-    },
-
-    toThrow: (expectedMsg) => {
-      countAssertion(); // <--- Add this to every matcher
-      let error = null;
-      try { actual(); } catch (e) { error = e; }
-      if (!error) throw new Error('Expected to throw, but passed');
-      
-      if (expectedMsg) {
-        // Polymorphic check: use .test() if it's a RegExp, otherwise use .includes()
-        const isMatch = expectedMsg instanceof RegExp 
-          ? expectedMsg.test(error.message) 
-          : error.message.includes(expectedMsg);
-
-        if (!isMatch) {
-          throw new Error(`Expected error containing "${expectedMsg}", got "${error.message}"`);
-        }
+      countAssertion();
+      if (typeof actual !== 'number' || typeof num !== 'number') {
+        throw usageError(`toBeCloseTo expects numbers, but received ${print(actual)} and ${print(num)}`);
       }
+      if (!(Math.abs(actual - num) < Math.pow(10, -precision) / 2)) {
+        throw assertionError(`Expected ${actual} to be close to ${num} (precision ${precision})`);
+      }
+    },
+
+    toMatch: (pattern) => {
+      countAssertion();
+      if (typeof actual !== 'string') {
+        throw usageError(`toMatch expects a string, but received ${print(actual)}`);
+      }
+      if (typeof pattern === 'string') {
+        if (!actual.includes(pattern)) {
+          throw assertionError(`${print(actual)} did not contain ${print(pattern)}`);
+        }
+        return;
+      }
+      if (!(pattern instanceof RegExp)) {
+        throw usageError(`toMatch expects a string or RegExp, but received ${print(pattern)}`);
+      }
+      if (!pattern.test(actual)) {
+        throw assertionError(`${print(actual)} did not match regex ${pattern}`);
+      }
+    },
+
+    toThrow: (expected) => {
+      countAssertion();
+      if (typeof actual !== 'function') {
+        throw usageError(`toThrow expects a function, but received ${print(actual)}`);
+      }
+
+      let thrown = null;
+      let didThrow = false;
+      try {
+        actual();
+      } catch (error) {
+        didThrow = true;
+        thrown = error;
+      }
+
+      if (!didThrow) throw assertionError('Expected to throw, but passed');
+      if (expected === undefined || expected === null) return;
+
+      const message = (thrown && typeof thrown.message === 'string') ? thrown.message : String(thrown);
+
+      if (typeof expected === 'string') {
+        if (!message.includes(expected)) {
+          throw assertionError(`Expected error containing "${expected}", got "${message}"`);
+        }
+        return;
+      }
+      if (expected instanceof RegExp) {
+        if (!expected.test(message)) {
+          throw assertionError(`Expected error matching ${expected}, got "${message}"`);
+        }
+        return;
+      }
+      if (expected instanceof Error) {
+        if (message !== expected.message) {
+          throw assertionError(`Expected error message "${expected.message}", got "${message}"`);
+        }
+        return;
+      }
+      if (typeof expected === 'function') {
+        if (!(thrown instanceof expected)) {
+          const actualName = (thrown && thrown.constructor && thrown.constructor.name) || typeof thrown;
+          throw assertionError(`Expected error of type ${expected.name || 'UnknownError'}, got ${actualName}`);
+        }
+        return;
+      }
+      throw usageError(
+        `toThrow expects a string, RegExp, Error class or Error instance, but received ${print(expected)}`
+      );
     },
 
     toHaveProperty: (keyPath, ...valueArgs) => {
-      countAssertion(); // <--- Add this to every matcher
-      const keys = keyPath.split('.');
+      countAssertion();
+      if (typeof keyPath !== 'string' && !Array.isArray(keyPath)) {
+        throw usageError(`toHaveProperty expects a string path or array of keys, got ${print(keyPath)}`);
+      }
+      const keys = Array.isArray(keyPath) ? keyPath : keyPath.split('.');
       let target = actual;
       for (const key of keys) {
-        if (!target || !(key in target)) throw new Error(`Property ${keyPath} not found`);
+        if (target === null || target === undefined || !(key in Object(target))) {
+          throw assertionError(`Property ${keys.join('.')} not found`);
+        }
         target = target[key];
       }
-      if (valueArgs.length > 0 && JSON.stringify(target) !== JSON.stringify(valueArgs[0])) {
-        throw new Error(`Expected ${keyPath} to be ${JSON.stringify(valueArgs[0])}, got ${JSON.stringify(target)}`);
+      if (valueArgs.length > 0 && !equals(target, valueArgs[0], false)) {
+        throw assertionError(
+          `Expected ${keys.join('.')} to be ${print(valueArgs[0])}, got ${print(target)}`
+        );
       }
     },
 
-    // Mock Matchers
+    // ---------- Mock matchers ----------
     toHaveBeenCalled: () => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!actual.mock?.calls.length) throw new Error('Function not called');
+      countAssertion();
+      const state = getMockState(actual, 'toHaveBeenCalled');
+      if (state.calls.length === 0) throw assertionError('Function not called');
     },
 
     toHaveBeenCalledTimes: (expectedCount) => {
       countAssertion();
-      
-      // Look up calls array across every possible property layer your framework might use
-      const calls = actual?.mock?.calls || 
-                    actual?._isMockFunction?.mock?.calls || 
-                    actual?._mock?.calls ||
-                    actual?.calls ||
-                    (actual && typeof actual === 'function' && actual.calls) ||
-                    (globalThis.jest?._calls && globalThis.jest._calls.get?.(actual)); // Checks if tracked in a Map
-
-      // If it's a valid function but tracking arrays can't be resolved,
-      // fallback gracefully instead of throwing a generic "received standard object" crash
-      if (!calls) {
-        if (typeof actual === 'function') return; 
-        throw new Error('Expected a mock function, but received a standard object.');
+      const state = getMockState(actual, 'toHaveBeenCalledTimes');
+      if (typeof expectedCount !== 'number') {
+        throw usageError(`toHaveBeenCalledTimes expects a number, got ${print(expectedCount)}`);
       }
-      
-      if (calls.length !== expectedCount) {
-        throw new Error(`Expected mock to be called ${expectedCount} times, but it was called ${calls.length} times.`);
+      if (state.calls.length !== expectedCount) {
+        throw assertionError(
+          `Expected mock to be called ${expectedCount} times, but it was called ${state.calls.length} times.`
+        );
       }
     },
 
     toHaveBeenCalledWith: (...expectedArgs) => {
       countAssertion();
-      
-      const calls = actual?.mock?.calls || 
-                    actual?._isMockFunction?.mock?.calls || 
-                    actual?._mock?.calls ||
-                    actual?.calls ||
-                    (actual && typeof actual === 'function' && actual.calls) ||
-                    (globalThis.jest?._calls && globalThis.jest._calls.get?.(actual));
+      const state = getMockState(actual, 'toHaveBeenCalledWith');
+      const passed = state.calls.some(callArgs => equals(callArgs, expectedArgs, false));
+      if (!passed) throw assertionError(`Never called with: ${print(expectedArgs)}`);
+    },
 
-      if (!calls) {
-        if (typeof actual === 'function') return;
-        throw new Error('Expected a mock function, but received a standard object.');
+    toHaveBeenLastCalledWith: (...expectedArgs) => {
+      countAssertion();
+      const state = getMockState(actual, 'toHaveBeenLastCalledWith');
+      if (state.calls.length === 0) throw assertionError('Function not called');
+      const lastCall = state.calls[state.calls.length - 1];
+      if (!equals(lastCall, expectedArgs, false)) {
+        throw assertionError(`Last call was ${print(lastCall)}, expected ${print(expectedArgs)}`);
       }
+    },
 
-      const passed = calls.some(callArgs => 
-        callArgs.length === expectedArgs.length &&
-        callArgs.every((arg, i) => deepEquals(arg, expectedArgs[i]))
-      );
-      if (!passed) {
-        throw new Error(`Never called with: ${JSON.stringify(expectedArgs)}`);
+    toHaveBeenNthCalledWith: (nth, ...expectedArgs) => {
+      countAssertion();
+      const state = getMockState(actual, 'toHaveBeenNthCalledWith');
+      if (!Number.isInteger(nth) || nth < 1) {
+        throw usageError(`toHaveBeenNthCalledWith expects a positive integer, got ${print(nth)}`);
+      }
+      const call = state.calls[nth - 1];
+      if (!call) {
+        throw assertionError(`Mock was called ${state.calls.length} times, no call number ${nth}`);
+      }
+      if (!equals(call, expectedArgs, false)) {
+        throw assertionError(`Call ${nth} was ${print(call)}, expected ${print(expectedArgs)}`);
+      }
+    },
+
+    toHaveReturned: () => {
+      countAssertion();
+      const state = getMockState(actual, 'toHaveReturned');
+      if (returnedValues(state).length === 0) {
+        throw assertionError('Expected mock to have returned at least once without throwing');
+      }
+    },
+
+    toHaveReturnedTimes: (expectedCount) => {
+      countAssertion();
+      const state = getMockState(actual, 'toHaveReturnedTimes');
+      if (typeof expectedCount !== 'number') {
+        throw usageError(`toHaveReturnedTimes expects a number, got ${print(expectedCount)}`);
+      }
+      const count = returnedValues(state).length;
+      if (count !== expectedCount) {
+        throw assertionError(`Expected mock to return ${expectedCount} times, but it returned ${count} times.`);
       }
     },
 
     toHaveReturnedWith: (expectedValue) => {
       countAssertion();
-      
-      // Look up returns array across every possible property layer
-      const returns = actual?.mock?.returns || 
-                      actual?._isMockFunction?.mock?.returns || 
-                      actual?._mock?.returns ||
-                      actual?.returns ||
-                      (actual && typeof actual === 'function' && actual.returns) ||
-                      (globalThis.jest?._returns && globalThis.jest._returns.get?.(actual));
-
-      if (!returns) {
-        if (typeof actual === 'function') return;
-        throw new Error('Expected a mock function, but received a standard object.');
-      }
-
-      const passed = returns.some(retVal => deepEquals(retVal, expectedValue));
-      if (!passed) {
-        throw new Error(`Never returned: ${JSON.stringify(expectedValue)}`);
+      const state = getMockState(actual, 'toHaveReturnedWith');
+      const values = returnedValues(state);
+      if (!values.some(value => equals(value, expectedValue, false))) {
+        throw assertionError(`Never returned: ${print(expectedValue)}`);
       }
     },
 
-  toMatchSnapshot: (customSnapName) => {
-      countAssertion(); // <--- Add this to every matcher
-      const key = (typeof customSnapName === 'string' && customSnapName) ? customSnapName : getSnapshotKey();
-      let serialized;
-
-      // Circular-safe stringify
-      try {
-        const seen = new WeakSet();
-        serialized = JSON.stringify(actual, (k, v) => {
-          if (typeof v === 'object' && v !== null) {
-            if (seen.has(v)) return '[Circular]';
-            seen.add(v);
-          }
-          return v;
-        }, 2);
-      } catch (e) {
-        serialized = "[Unserializable]";
+    toHaveLastReturnedWith: (expectedValue) => {
+      countAssertion();
+      const state = getMockState(actual, 'toHaveLastReturnedWith');
+      if (state.results.length === 0) throw assertionError('Function not called');
+      const last = state.results[state.results.length - 1];
+      if (last.type !== 'return' || !equals(last.value, expectedValue, false)) {
+        throw assertionError(
+          `Last result was ${last.type === 'throw' ? `a thrown ${print(last.value)}` : print(last.value)}, ` +
+          `expected ${print(expectedValue)}`
+        );
       }
+    },
 
-      // Environmental Discovery Layer
-      const isNode = typeof process !== 'undefined' && process.versions && process.versions.node && !globalThis._forceBrowserStorage;
+    toHaveNthReturnedWith: (nth, expectedValue) => {
+      countAssertion();
+      const state = getMockState(actual, 'toHaveNthReturnedWith');
+      if (!Number.isInteger(nth) || nth < 1) {
+        throw usageError(`toHaveNthReturnedWith expects a positive integer, got ${print(nth)}`);
+      }
+      const result = state.results[nth - 1];
+      if (!result) {
+        throw assertionError(`Mock was called ${state.results.length} times, no result number ${nth}`);
+      }
+      if (result.type !== 'return' || !equals(result.value, expectedValue, false)) {
+        throw assertionError(
+          `Result ${nth} was ${result.type === 'throw' ? `a thrown ${print(result.value)}` : print(result.value)}, ` +
+          `expected ${print(expectedValue)}`
+        );
+      }
+    },
 
-      // Setup isomorphic storage handlers
-      const getStoredSnapshot = () => {
-        if (isNode) {
-          try {
-            const fs = esmRequire('fs');
-            const path = esmRequire('path');
-            const snapPath = path.join(process.cwd(), '__snapshots__', 'jest-lite.snap');
-            if (fs.existsSync(snapPath)) {
-              const fileContent = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
-              return fileContent[key] !== undefined ? fileContent[key] : null;
-            }
-          } catch (e) { return null; }
-        }
-        if (typeof localStorage !== 'undefined') {
-          return localStorage.getItem(key);
-        }
-        return globalThis._fallbackSnapCache ? globalThis._fallbackSnapCache[key] : null;
-      };
+    // ---------- Snapshots ----------
+    toMatchSnapshot: (customSnapName) => {
+      countAssertion();
+      if (customSnapName !== undefined && typeof customSnapName !== 'string') {
+        throw usageError(`toMatchSnapshot expects an optional string name, got ${print(customSnapName)}`);
+      }
+      const key = customSnapName || getSnapshotKey();
+      const serialized = serializeSnapshot(actual);
+      snapshotIndex++;
 
-      const writeStoredSnapshot = (valueStr) => {
-        if (isNode) {
-          try {
-            const fs = esmRequire('fs');
-            const path = esmRequire('path');
-            const snapDir = path.join(process.cwd(), '__snapshots__');
-            if (!fs.existsSync(snapDir)) fs.mkdirSync(snapDir, { recursive: true });
+      const existing = readSnapshot(key);
+      const shouldUpdate = typeof window !== 'undefined' && window.updateSnapshots !== undefined
+        ? window.updateSnapshots
+        : globalScope.updateSnapshots;
 
-            const snapPath = path.join(snapDir, 'jest-lite.snap');
-            let snaps = {};
-            if (fs.existsSync(snapPath)) {
-              try { snaps = JSON.parse(fs.readFileSync(snapPath, 'utf8')); } catch (e) { snaps = {}; }
-            }
-            snaps[key] = valueStr;
-            fs.writeFileSync(snapPath, JSON.stringify(snaps, null, 2), 'utf8');
-            return;
-          } catch (e) { /* Fallback to storage on file failure */ }
-        }
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem(key, valueStr);
-        } else {
-          if (!globalThis._fallbackSnapCache) globalThis._fallbackSnapCache = {};
-          globalThis._fallbackSnapCache[key] = valueStr;
-        }
-      };
-
-      const existing = getStoredSnapshot();
-      // Check for global update flag across standard namespaces
-      const shouldUpdate = typeof window !== 'undefined' ? window.updateSnapshots : globalThis.updateSnapshots;
-
-      if (existing === null || shouldUpdate) {
-        writeStoredSnapshot(serialized);
+      if (existing === null || existing === undefined || shouldUpdate) {
+        writeSnapshot(key, serialized);
         console.log(`%c[Snapshot Saved]: %c${key}`, 'font-weight:bold; color: #2980b9', 'color: #7f8c8d');
-        snapshotIndex++;
         return;
       }
 
       if (existing !== serialized) {
         console.groupCollapsed(`%c❌ Snapshot Mismatch: ${key}`, 'color: #e74c3c; font-weight: bold');
-        try {
-          console.log('%cExpected:', 'color: #27ae60', JSON.parse(existing));
-          console.log('%cReceived:', 'color: #c0392b', JSON.parse(serialized));
-        } catch (e) {
-          console.log('%cExpected:', 'color: #27ae60', existing);
-          console.log('%cReceived:', 'color: #c0392b', serialized);
-        }
-        console.log('%cFix:', 'color: #8e44ad', `Run: window.updateSnapshots = true; run();`);
+        console.log('%cExpected:', 'color: #27ae60', existing);
+        console.log('%cReceived:', 'color: #c0392b', serialized);
+        console.log('%cFix:', 'color: #8e44ad', 'Set globalThis.updateSnapshots = true; then re-run.');
         console.groupEnd();
-        throw new Error(`Snapshot Mismatch for ${key}`);
+        throw assertionError(`Snapshot Mismatch for ${key}`);
       }
-
-      console.log(`%c  [Snapshot Matched]`, 'color: #7f8c8d; font-style: italic');
-      snapshotIndex++;
     },
-
 
     toMatchObject: (expected) => {
-      countAssertion(); // <--- Add this to every matcher
-      const compare = (rec, exp) => {
-        for (const key in exp) {
-          const expectedVal = exp[key];
-          const receivedVal = rec[key];
-
-          // Check if it's an asymmetric matcher (like expect.any)
-          if (expectedVal && typeof expectedVal.asymmetricMatch === 'function') {
-            if (!expectedVal.asymmetricMatch(receivedVal)) return false;
-            continue; 
-          }
-
-          // Standard deep recursion for objects
-          if (typeof expectedVal === 'object' && expectedVal !== null) {
-            if (!receivedVal || !compare(receivedVal, expectedVal)) return false;
-          } else {
-            if (receivedVal !== expectedVal) return false;
-          }
-        }
-        return true;
-      };
-
-      if (!compare(actual, expected)) {
-        throw new Error(`Object mismatch.\nExpected subset: ${JSON.stringify(expected)}\nReceived: ${JSON.stringify(actual)}`);
+      countAssertion();
+      if (expected === null || typeof expected !== 'object') {
+        throw usageError(`toMatchObject expects an object or array, but received ${print(expected)}`);
+      }
+      if (actual === null || typeof actual !== 'object') {
+        throw assertionError(`Object mismatch.\nExpected subset: ${print(expected)}\nReceived: ${print(actual)}`);
+      }
+      if (!matchesSubset(actual, expected)) {
+        throw assertionError(`Object mismatch.\nExpected subset: ${print(expected)}\nReceived: ${print(actual)}`);
       }
     },
 
-
     toBeInstanceOf: (ExpectedClass) => {
-      countAssertion(); // <--- Add this to every matcher
+      countAssertion();
+      if (typeof ExpectedClass !== 'function') {
+        throw usageError(`toBeInstanceOf expects a constructor, but received ${print(ExpectedClass)}`);
+      }
       if (!(actual instanceof ExpectedClass)) {
-        const actualName = actual?.constructor?.name || typeof actual;
-        const expectedName = ExpectedClass.name || 'UnknownClass';
-        throw new Error(`Expected instance of ${expectedName}, but got ${actualName}`);
+        const actualName = (actual && actual.constructor && actual.constructor.name) || typeof actual;
+        throw assertionError(
+          `Expected instance of ${ExpectedClass.name || 'UnknownClass'}, but got ${actualName}`
+        );
       }
     },
 
     toBeEmpty: () => {
-      countAssertion(); // <--- Add this to every matcher
-      const length = actual?.length ?? (actual && typeof actual === 'object' ? Object.keys(actual).length : 0);
-      if (length !== 0) throw new Error(`Expected empty, but got length ${length}`);
-    },
-
-    toBeGreaterThanOrEqual: (b) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!(actual >= b)) throw new Error(`Expected ${actual} >= ${b}`);
-    },
-
-    toBeLessThanOrEqual: (b) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!(actual <= b)) throw new Error(`Expected ${actual} <= ${b}`);
+      countAssertion();
+      const length = actual?.length
+        ?? actual?.size
+        ?? (actual && typeof actual === 'object' ? Object.keys(actual).length : 0);
+      if (length !== 0) throw assertionError(`Expected empty, but got length ${length}`);
     },
 
     toBeType: (type) => {
-      countAssertion(); // <--- Add this to every matcher
-      if (typeof actual !== type) throw new Error(`Expected type ${type}, but got ${typeof actual}`);
+      countAssertion();
+      if (typeof type !== 'string') {
+        throw usageError(`toBeType expects a type name string, got ${print(type)}`);
+      }
+      if (typeof actual !== type) throw assertionError(`Expected type ${type}, but got ${typeof actual}`);
     },
 
     toBeArray: () => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!Array.isArray(actual)) throw new Error(`Expected Array, but got ${typeof actual}`);
+      countAssertion();
+      if (!Array.isArray(actual)) throw assertionError(`Expected Array, but got ${typeof actual}`);
     },
 
     toBeObject: () => {
-      countAssertion(); // <--- Add this to every matcher
-      const isObj = typeof actual === 'object' && actual !== null && !Array.isArray(actual);
-      if (!isObj) throw new Error(`Expected Object, but got ${actual === null ? 'null' : typeof actual}`);
+      countAssertion();
+      const isObject = typeof actual === 'object' && actual !== null && !Array.isArray(actual);
+      if (!isObject) {
+        throw assertionError(`Expected Object, but got ${actual === null ? 'null' : typeof actual}`);
+      }
     },
 
     toStartWith: (str) => {
-      countAssertion(); // <--- Add this to every matcher
+      countAssertion();
       if (typeof actual !== 'string' || !actual.startsWith(str)) {
-        throw new Error(`Expected "${actual}" to start with "${str}"`);
+        throw assertionError(`Expected ${print(actual)} to start with ${print(str)}`);
       }
     },
 
     toEndWith: (str) => {
-      countAssertion(); // <--- Add this to every matcher
+      countAssertion();
       if (typeof actual !== 'string' || !actual.endsWith(str)) {
-        throw new Error(`Expected "${actual}" to end with "${str}"`);
+        throw assertionError(`Expected ${print(actual)} to end with ${print(str)}`);
       }
     },
 
-    // --- UI Matchers ---
+    // ---------- UI / DOM matchers ----------
     toExist: () => {
-      countAssertion(); // <--- Add this to every matcher
-      // Check if it's a DOM element or at least not null/undefined
-      const exists = actual !== null && actual !== undefined && (actual instanceof HTMLElement || actual.length > 0 || !!actual);
-      
+      countAssertion();
+      // Guarded so environments without a DOM never hit a ReferenceError.
+      const isElement = typeof HTMLElement !== 'undefined' && actual instanceof HTMLElement;
+      let exists;
+      if (actual === null || actual === undefined) exists = false;
+      else if (isElement) exists = true;
+      else if (typeof actual.length === 'number') exists = actual.length > 0;
+      else exists = !!actual;
       if (!exists) {
-        throw new Error(`Expected element to exist in the DOM, but got ${actual}`);
+        throw assertionError(`Expected element to exist in the DOM, but got ${print(actual)}`);
       }
     },
 
     toHaveClass: (className) => {
-      countAssertion(); // <--- Add this to every matcher
-      const classList = actual?.classList;
+      countAssertion();
+      if (!actual || typeof actual !== 'object') {
+        throw usageError(`toHaveClass expects a DOM element, but received ${print(actual)}`);
+      }
+      const classList = actual.classList;
       const hasClass = classList && typeof classList.contains === 'function'
         ? classList.contains(className)
-        : (actual?.className || '').split(/\s+/).includes(className);
+        : String(actual.className || '').split(/\s+/).includes(className);
       if (!hasClass) {
-        throw new Error(`Expected element to have class "${className}", but got "${actual?.className || ''}"`);
+        throw assertionError(
+          `Expected element to have class "${className}", but got "${actual.className || ''}"`
+        );
       }
     },
 
     toBeVisible: () => {
-      countAssertion(); // <--- Add this to every matcher
-      // Checks if element is in DOM, has dimensions, and isn't hidden via CSS
-      const style = window.getComputedStyle(actual);
-      const isVisible = !!(actual.offsetWidth || actual.offsetHeight || actual.getClientRects().length) &&
-                        style.display !== 'none' && 
-                        style.visibility !== 'hidden';
-      if (!isVisible) throw new Error(`Expected element to be visible`);
+      countAssertion();
+      if (!actual || typeof actual !== 'object') {
+        throw usageError(`toBeVisible expects a DOM element, but received ${print(actual)}`);
+      }
+      if (typeof globalScope.getComputedStyle !== 'function') {
+        throw usageError('toBeVisible requires a DOM environment exposing getComputedStyle');
+      }
+      const style = globalScope.getComputedStyle(actual) || {};
+      const rects = typeof actual.getClientRects === 'function' ? actual.getClientRects() : [];
+      const hasBox = !!(actual.offsetWidth || actual.offsetHeight || (rects && rects.length));
+      const isVisible = hasBox && style.display !== 'none' && style.visibility !== 'hidden';
+      if (!isVisible) throw assertionError('Expected element to be visible');
     },
 
     toHaveTextContent: (text) => {
-      countAssertion(); // <--- Add this to every matcher
-      const content = actual?.textContent || '';
+      countAssertion();
+      if (!actual || typeof actual !== 'object') {
+        throw usageError(`toHaveTextContent expects a DOM element, but received ${print(actual)}`);
+      }
+      const content = actual.textContent || '';
       const match = typeof text === 'string' ? content.includes(text) : text.test(content);
-      if (!match) throw new Error(`Expected element to contain text "${text}", but got "${content.trim()}"`);
+      if (!match) {
+        throw assertionError(`Expected element to contain text "${text}", but got "${content.trim()}"`);
+      }
     },
 
     toBeDisabled: () => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!actual?.disabled) throw new Error(`Expected element to be disabled`);
-    },
-
-    toHaveAttribute: (attr, value) => {
-      countAssertion(); // <--- Add this to every matcher
-      const hasAttr = actual?.hasAttribute(attr);
-      if (!hasAttr) throw new Error(`Expected element to have attribute "${attr}"`);
-      if (arguments.length > 1 && actual.getAttribute(attr) !== value) {
-        throw new Error(`Expected attribute "${attr}" to be "${value}", but got "${actual.getAttribute(attr)}"`);
+      countAssertion();
+      if (!actual || typeof actual !== 'object') {
+        throw usageError(`toBeDisabled expects a DOM element, but received ${print(actual)}`);
       }
+      if (!actual.disabled) throw assertionError('Expected element to be disabled');
     },
 
-    /**
-     * toBeInTheDocument
-     * Asserts that an element is physically present in the document tree.
-     */
-    toBeInTheDocument: () => {
-      countAssertion(); // <--- Add this to every matcher
-      if (!document.contains(actual)) {
-        throw new Error(`Expected element to be in the document, but it was not found.`);
+    toHaveAttribute: (attr, ...expectedValue) => {
+      countAssertion();
+      if (!actual || typeof actual.hasAttribute !== 'function') {
+        throw usageError(`toHaveAttribute expects a DOM element, but received ${print(actual)}`);
       }
-    },
-
-    /**
-     * toHaveStyle
-     * Checks if an element has specific CSS properties applied, 
-     * including those from external stylesheets.
-     */
-    toHaveStyle: (styles) => {
-      countAssertion(); // <--- Add this to every matcher
-      const computedStyle = window.getComputedStyle(actual);
-      for (const [prop, value] of Object.entries(styles)) {
-        // Handles both camelCase and kebab-case keys
-        const kebabProp = prop.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
-        const actualValue = computedStyle.getPropertyValue(kebabProp);
-        
-        if (actualValue !== value) {
-          throw new Error(
-            `Expected ${kebabProp} to be "${value}", but got "${actualValue}"`
+      if (typeof attr !== 'string') {
+        throw usageError(`toHaveAttribute expects an attribute name string, got ${print(attr)}`);
+      }
+      if (!actual.hasAttribute(attr)) {
+        throw assertionError(`Expected element to have attribute "${attr}"`);
+      }
+      // Only compare values when a second argument was actually supplied.
+      if (expectedValue.length > 0) {
+        const received = actual.getAttribute(attr);
+        if (received !== expectedValue[0]) {
+          throw assertionError(
+            `Expected attribute "${attr}" to be "${expectedValue[0]}", but got "${received}"`
           );
         }
       }
     },
 
-    /**
-     * toHaveFocus
-     * Verifies if the element is the currently focused item in the document.
-     */
-    toHaveFocus: () => {
-      countAssertion(); // <--- Add this to every matcher
-      if (document.activeElement !== actual) {
-        throw new Error(`Expected element to have focus, but it did not.`);
+    toBeInTheDocument: () => {
+      countAssertion();
+      if (typeof document === 'undefined' || typeof document.contains !== 'function') {
+        throw usageError('toBeInTheDocument requires a DOM environment exposing document.contains');
       }
+      if (!document.contains(actual)) {
+        throw assertionError('Expected element to be in the document, but it was not found.');
+      }
+    },
+
+    toHaveStyle: (styles) => {
+      countAssertion();
+      if (!styles || typeof styles !== 'object') {
+        throw usageError(`toHaveStyle expects an object of CSS properties, got ${print(styles)}`);
+      }
+      if (typeof globalScope.getComputedStyle !== 'function') {
+        throw usageError('toHaveStyle requires a DOM environment exposing getComputedStyle');
+      }
+      const computedStyle = globalScope.getComputedStyle(actual);
+      if (!computedStyle || typeof computedStyle.getPropertyValue !== 'function') {
+        throw usageError('toHaveStyle could not read a computed style from the received element');
+      }
+      for (const [prop, value] of Object.entries(styles)) {
+        const kebabProp = prop.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+        const actualValue = computedStyle.getPropertyValue(kebabProp);
+        if (actualValue !== value) {
+          throw assertionError(`Expected ${kebabProp} to be "${value}", but got "${actualValue}"`);
+        }
+      }
+    },
+
+    toHaveFocus: () => {
+      countAssertion();
+      if (typeof document === 'undefined') {
+        throw usageError('toHaveFocus requires a DOM environment exposing document.activeElement');
+      }
+      if (document.activeElement !== actual) {
+        throw assertionError('Expected element to have focus, but it did not.');
+      }
+    },
+    };
+
+    // Jest compatibility alias
+    matchers.toThrowError = matchers.toThrow;
+    return matchers;
+  };
+
+  // ==========================================================================
+  // 9. EXPECT
+  // ==========================================================================
+
+  const customMatchersRegistry = {};
+  const BUILT_IN_MATCHER_NAMES = Object.keys(createMatchers(undefined));
+
+  const matcherContext = (isNot) => ({
+    isNot,
+    equals: (a, b, strict = false) => equals(a, b, strict),
+    utils: {
+      printReceived: print,
+      printExpected: print,
+      stringify: print,
     },
   });
 
-  // Global repository for Jest-compatible custom matchers
-  const customMatchersRegistry = {};
+  const createCustomMatcherRunner = (matcherFn, actual, isInverted) => (...args) => {
+    countAssertion();
+    const result = matcherFn.call(matcherContext(isInverted), actual, ...args);
+    if (!result || typeof result.pass !== 'boolean') {
+      throw usageError('Custom matchers must return an object shaped like { pass: boolean, message?: Function }');
+    }
+    const didPass = isInverted ? !result.pass : result.pass;
+    if (!didPass) {
+      const message = typeof result.message === 'function' ? result.message() : result.message;
+      throw assertionError(message || 'Custom matcher assertion failed');
+    }
+  };
+
+  const invertMatcher = (matcherFn, name) => (...args) => {
+    try {
+      matcherFn(...args);
+    } catch (error) {
+      // Only genuine assertion failures satisfy `.not`; real errors keep propagating.
+      if (isAssertionError(error)) return;
+      throw error;
+    }
+    throw assertionError(`Expected NOT to ${name}`, { matcherName: name });
+  };
+
+  const settlePromise = async (received, mode) => {
+    if (!received || (typeof received.then !== 'function')) {
+      throw usageError(`.${mode} expects a promise or thenable, but received ${print(received)}`);
+    }
+    if (mode === 'resolves') {
+      try {
+        return await received;
+      } catch (error) {
+        throw assertionError(`Expected promise to resolve, but it rejected with ${print(error)}`);
+      }
+    }
+    let resolvedValue;
+    try {
+      resolvedValue = await received;
+    } catch (error) {
+      return error;
+    }
+    throw assertionError(`Expected promise to reject, but it resolved with ${print(resolvedValue)}`);
+  };
+
+  const createAsyncChain = (received, mode) => {
+    const names = BUILT_IN_MATCHER_NAMES.concat(Object.keys(customMatchersRegistry));
+    const chain = { not: {} };
+    // `.rejects.toThrow(...)` reads naturally when the rejection reason is re-thrown.
+    const adapt = (name, value) => (
+      (mode === 'rejects' && (name === 'toThrow' || name === 'toThrowError'))
+        ? () => { throw value; }
+        : value
+    );
+    names.forEach((name) => {
+      chain[name] = async (...args) => {
+        const value = await settlePromise(received, mode);
+        return expect(adapt(name, value))[name](...args);
+      };
+      chain.not[name] = async (...args) => {
+        const value = await settlePromise(received, mode);
+        return expect(adapt(name, value)).not[name](...args);
+      };
+    });
+    return chain;
+  };
 
   const expect = (actual) => {
-    // 1. Get the base native matchers
-    const m = matchers(actual);
-    
-    // 2. Helper factory to convert Jest-shaped matchers into your framework's throw mechanics
-    const createCustomMatcherRunner = (matcherFn, isInverted) => {
-      return (...args) => {
-        countAssertion(); // Increment your telemetry counter automatically on execution
-        
-        // Jest matchers accept (actual, ...expectedArgs) and return { pass, message }
-        const result = matcherFn(actual, ...args);
-        
-        // Handle .not logical inversion context flag
-        const didPass = isInverted ? !result.pass : result.pass;
-        
-        if (!didPass) {
-          const errorMsg = typeof result.message === 'function' ? result.message() : result.message;
-          throw new Error(errorMsg || 'Custom matcher assertion failed');
-        }
-      };
-    };
+    const builtIns = createMatchers(actual);
+    const api = { ...builtIns, not: {} };
 
-    // 3. Build the forward expectation chain with both native and registered custom matchers
-    const proxy = { ...m };
-    Object.keys(customMatchersRegistry).forEach(key => {
-      proxy[key] = createCustomMatcherRunner(customMatchersRegistry[key], false);
+    Object.keys(builtIns).forEach((name) => {
+      api.not[name] = invertMatcher(builtIns[name], name);
     });
 
-    // 4. Build the inverted (.not) chain for both native and custom matchers dynamically
-    proxy.not = {};
-    
-    // Invert native matchers by swallowing errors on failure and throwing on success
-    Object.keys(m).forEach(key => {
-      proxy.not[key] = (...args) => {
-        try { m[key](...args); } catch (e) { return; }
-        throw new Error(`Expected NOT to ${key}`);
-      };
+    Object.keys(customMatchersRegistry).forEach((name) => {
+      api[name] = createCustomMatcherRunner(customMatchersRegistry[name], actual, false);
+      api.not[name] = createCustomMatcherRunner(customMatchersRegistry[name], actual, true);
     });
 
-    // Invert custom matchers by passing the inversion flag into the custom runner factory
-    Object.keys(customMatchersRegistry).forEach(key => {
-      proxy.not[key] = createCustomMatcherRunner(customMatchersRegistry[key], true);
+    // Async chains are built lazily so the common synchronous path stays cheap.
+    Object.defineProperty(api, 'resolves', {
+      configurable: true,
+      enumerable: true,
+      get: () => createAsyncChain(actual, 'resolves'),
+    });
+    Object.defineProperty(api, 'rejects', {
+      configurable: true,
+      enumerable: true,
+      get: () => createAsyncChain(actual, 'rejects'),
     });
 
-    return proxy;
+    return api;
   };
 
   expect.assertions = (num) => {
+    if (!Number.isInteger(num) || num < 0) {
+      throw usageError(`expect.assertions expects a non-negative integer, got ${print(num)}`);
+    }
     expectedAssertions = num;
   };
 
-  expect.any = (ctor) => ({
-    asymmetricMatch: (val) => {
-      if (ctor === Number) return typeof val === 'number';
-      if (ctor === String) return typeof val === 'string';
-      if (ctor === Boolean) return typeof val === 'boolean';
+  expect.hasAssertions = () => { requiresAssertions = true; };
+
+  expect.getState = () => ({
+    assertionCount,
+    expectedAssertions,
+    requiresAssertions,
+    currentTestName,
+    currentSuitePath: [...currentSuitePath],
+  });
+
+  expect.AssertionError = JestLiteAssertionError;
+
+  expect.any = (ctor) => {
+    if (typeof ctor !== 'function') {
+      throw usageError(`expect.any expects a constructor, but received ${print(ctor)}`);
+    }
+    return createAsymmetricMatcher(`Any<${ctor.name || 'anonymous'}>`, (val) => {
+      if (ctor === Number) return typeof val === 'number' || val instanceof Number;
+      if (ctor === String) return typeof val === 'string' || val instanceof String;
+      if (ctor === Boolean) return typeof val === 'boolean' || val instanceof Boolean;
+      if (ctor === BigInt) return typeof val === 'bigint';
+      if (ctor === Symbol) return typeof val === 'symbol';
       if (ctor === Object) return typeof val === 'object' && val !== null;
       if (ctor === Array) return Array.isArray(val);
       if (ctor === Function) return typeof val === 'function';
       return val instanceof ctor;
-    }
-  });
+    });
+  };
 
-  expect.anything = () => ({
-    asymmetricMatch: (val) => val !== null && val !== undefined
-  });
+  expect.anything = () => createAsymmetricMatcher(
+    'Anything',
+    (val) => val !== null && val !== undefined
+  );
 
-  expect.stringMatching = (pattern) => ({
-    asymmetricMatch: (actual) => {
-      const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern);
-      return typeof actual === 'string' && regex.test(actual);
+  expect.stringMatching = (pattern) => {
+    if (typeof pattern !== 'string' && !(pattern instanceof RegExp)) {
+      throw usageError(`expect.stringMatching expects a string or RegExp, got ${print(pattern)}`);
     }
-  });
+    const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern);
+    return createAsymmetricMatcher(
+      `StringMatching<${regex}>`,
+      (val) => typeof val === 'string' && regex.test(val)
+    );
+  };
 
-  expect.arrayContaining = (expectedItems) => ({
-    asymmetricMatch: (actual) => {
-      if (!Array.isArray(actual)) return false;
-      return expectedItems.every(expItem => 
-        actual.some(actItem => deepEquals(actItem, expItem))
-      );
+  expect.stringContaining = (substring) => {
+    if (typeof substring !== 'string') {
+      throw usageError(`expect.stringContaining expects a string, got ${print(substring)}`);
     }
-  });
+    return createAsymmetricMatcher(
+      `StringContaining<${JSON.stringify(substring)}>`,
+      (val) => typeof val === 'string' && val.includes(substring)
+    );
+  };
 
-  expect.objectContaining = (expectedSubset) => ({
-    asymmetricMatch: (actual) => {
-      if (actual === null || typeof actual !== 'object') return false;
-      return Object.keys(expectedSubset).every(key => 
-        deepEquals(actual[key], expectedSubset[key])
-      );
+  expect.arrayContaining = (expectedItems) => {
+    if (!Array.isArray(expectedItems)) {
+      throw usageError(`expect.arrayContaining expects an array, got ${print(expectedItems)}`);
     }
-  });
+    return createAsymmetricMatcher(
+      `ArrayContaining<${print(expectedItems)}>`,
+      (val) => Array.isArray(val)
+        && expectedItems.every(expected => val.some(item => equals(item, expected, false)))
+    );
+  };
+
+  expect.objectContaining = (expectedSubset) => {
+    if (expectedSubset === null || typeof expectedSubset !== 'object') {
+      throw usageError(`expect.objectContaining expects an object, got ${print(expectedSubset)}`);
+    }
+    return createAsymmetricMatcher(
+      `ObjectContaining<${print(expectedSubset)}>`,
+      (val) => val !== null && typeof val === 'object'
+        && Object.keys(expectedSubset).every(key => equals(val[key], expectedSubset[key], false))
+    );
+  };
+
+  expect.closeTo = (expectedNumber, precision = 2) => {
+    if (typeof expectedNumber !== 'number') {
+      throw usageError(`expect.closeTo expects a number, got ${print(expectedNumber)}`);
+    }
+    return createAsymmetricMatcher(
+      `CloseTo<${expectedNumber}>`,
+      (val) => typeof val === 'number'
+        && Math.abs(val - expectedNumber) < Math.pow(10, -precision) / 2
+    );
+  };
 
   const extendExpect = (newMatchers) => {
-    // Merge new matchers into our static registry just like official Jest
-    Object.assign(customMatchersRegistry, newMatchers);
+    if (!newMatchers || typeof newMatchers !== 'object') {
+      throw usageError(`expect.extend expects an object of matcher functions, got ${print(newMatchers)}`);
+    }
+    Object.entries(newMatchers).forEach(([name, matcher]) => {
+      if (typeof matcher !== 'function') {
+        throw usageError(`expect.extend: matcher "${name}" must be a function`);
+      }
+      customMatchersRegistry[name] = matcher;
+    });
   };
-  
-  // Bind alias to support expect.extend natively
-  expect.extend = (newMatchers) => extendExpect(newMatchers);
 
-  // --- DSL (describe, it, hooks) ---
-  const describe = (name, cb) => {
+  expect.extend = extendExpect;
+
+  // ==========================================================================
+  // 10. TEST / HOOK TIMEOUTS
+  // ==========================================================================
+
+  const DEFAULT_TEST_TIMEOUT = 5000;
+
+  /** Validates a Jest-style timeout argument; `undefined` falls back to the default. */
+  const validateTimeout = (timeout, label) => {
+    if (timeout === undefined) return DEFAULT_TEST_TIMEOUT;
+    if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0) {
+      throw usageError(`${label} timeout must be a non-negative finite number, got ${print(timeout)}`);
+    }
+    return timeout;
+  };
+
+  /**
+   * Races `fn()` against a real (native) timer identified by `label`, so timeout
+   * enforcement can never be disabled by `jest.useFakeTimers()`. The timer is always
+   * cleared as soon as either side settles, leaving nothing pending afterwards.
+   */
+  const withTimeout = (fn, timeout, label) => new Promise((resolve, reject) => {
+    let settled = false;
+    const timerId = REAL_SET_TIMEOUT(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(
+        `${label} timed out after ${timeout}ms. Increase the timeout value to allow more time, `
+        + 'if this is expected to take longer (see the final `timeout` argument of test/it/hooks).'
+      ));
+    }, timeout);
+
+    Promise.resolve().then(fn).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        REAL_CLEAR_TIMEOUT(timerId);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        REAL_CLEAR_TIMEOUT(timerId);
+        reject(error);
+      }
+    );
+  });
+
+  // ==========================================================================
+  // 11. SUITE / TEST DSL
+  // ==========================================================================
+
+  const createSuite = (name = 'root', mode = 'run') => ({
+    name,
+    mode,
+    tests: [],
+    suites: [],
+    beforeAll: [],
+    afterAll: [],
+    beforeEach: [],
+    afterEach: [],
+  });
+
+  let rootSuite = createSuite();
+  let currentSuite = rootSuite;
+
+  const registerTest = (name, testFn, mode, timeout) => {
+    if (mode !== 'todo' && typeof testFn !== 'function') {
+      throw usageError(`Test "${name}" requires an implementation function`);
+    }
+    const resolvedTimeout = mode === 'todo' ? DEFAULT_TEST_TIMEOUT : validateTimeout(timeout, `Test "${name}"`);
+    const test = { name: String(name), fn: testFn, mode, timeout: resolvedTimeout };
+    currentSuite.tests.push(test);
+    return test;
+  };
+
+  const registerSuite = (name, cb, mode) => {
+    if (typeof cb !== 'function') {
+      throw usageError(`describe("${name}") requires a callback function`);
+    }
     const parent = currentSuite;
-    const suite = createSuite(name);
+    const suite = createSuite(String(name), mode);
     parent.suites.push(suite);
     currentSuite = suite;
-    cb();
-    currentSuite = parent;
+    try {
+      cb();
+    } finally {
+      currentSuite = parent;
+    }
+    return suite;
   };
 
-  const beforeAll = (fn) => currentSuite.beforeAll.push(fn);
-  const afterAll = (fn) => currentSuite.afterAll.push(fn);
-  const beforeEach = (fn) => currentSuite.beforeEach.push(fn);
-  const afterEach = (fn) => currentSuite.afterEach.push(fn);
-
-  // --- Executor ---
-  // --- Updated Executor with Stats ---
-  const run = async (suite = rootSuite, parents = [], stats = { pass: 0, fail: 0, skip: 0 }) => {
-    const hasOnly = (s) => s.tests.some(t => t.mode === 'only') || s.suites.some(hasOnly);
-    const globalOnly = hasOnly(rootSuite);
-
-    if (suite.name !== 'root') {
-      console.log(`%c\nFOLDER: ${suite.name}`, 'font-weight: bold; color: #4A90E2;');
+  /** Parses a tagged-template table into an array of row objects. */
+  const parseTemplateTable = (strings, expressions) => {
+    const headings = strings[0].trim().split('|').map(part => part.trim()).filter(Boolean);
+    if (headings.length === 0) {
+      throw usageError('each`` template tables require a header row, e.g. `a | b | expected`');
     }
-    
-    for (const hook of suite.beforeAll) await hook();
+    if (expressions.length % headings.length !== 0) {
+      throw usageError(
+        `each\`\` table has ${expressions.length} values which is not divisible by ${headings.length} headings`
+      );
+    }
+    const rows = [];
+    for (let i = 0; i < expressions.length; i += headings.length) {
+      const row = {};
+      headings.forEach((heading, index) => { row[heading] = expressions[i + index]; });
+      rows.push(row);
+    }
+    return rows;
+  };
+
+  const resolvePath = (obj, path) => path.split('.').reduce(
+    (acc, key) => (acc === null || acc === undefined ? undefined : acc[key]),
+    obj
+  );
+
+  const formatValue = (token, value) => {
+    switch (token) {
+      case '%d':
+      case '%i': return String(Number(value));
+      case '%f': return String(Number(value));
+      case '%j': {
+        try { return JSON.stringify(value); } catch (e) { return print(value); }
+      }
+      case '%o':
+      case '%p': return print(value);
+      default:
+        return (value !== null && typeof value === 'object') ? print(value) : String(value);
+    }
+  };
+
+  const interpolate = (title, args, index) => {
+    let cursor = 0;
+    let result = String(title).replace(/%[%sdifjop#]/g, (token) => {
+      if (token === '%%') return '%';
+      if (token === '%#') return String(index);
+      if (cursor >= args.length) return token;
+      return formatValue(token, args[cursor++]);
+    });
+
+    const row = args.length === 1 ? args[0] : undefined;
+    if (row !== null && typeof row === 'object') {
+      result = result.replace(/\$([A-Za-z_$][\w]*(?:\.[A-Za-z_$][\w]*)*)/g, (match, path) => {
+        if (path === '#') return String(index);
+        const value = resolvePath(row, path);
+        return value === undefined ? match : formatValue('%s', value);
+      });
+    }
+    return result.replace(/\$#/g, String(index));
+  };
+
+  /**
+   * Builds an `.each` implementation for a registration function.
+   * Supports `each([[1, 2]])(...)` and tagged templates: each`a|b\n${1}|${2}`(...)
+   */
+  const createEach = (register) => (...tableArgs) => {
+    const [first, ...rest] = tableArgs;
+    const isTemplate = Array.isArray(first) && Array.isArray(first.raw);
+    if (!isTemplate && !Array.isArray(first)) {
+      throw usageError(`.each expects an array table or a tagged template literal, got ${print(first)}`);
+    }
+    const rows = isTemplate ? parseTemplateTable(first, rest) : first;
+
+    return (name, callback, timeout) => {
+      rows.forEach((row, index) => {
+        const args = isTemplate ? [row] : (Array.isArray(row) ? row : [row]);
+        register(interpolate(name, args, index), callback, args, timeout);
+      });
+    };
+  };
+
+  const it = (name, testFn, timeout) => registerTest(name, testFn, 'run', timeout);
+  it.only = (name, testFn, timeout) => registerTest(name, testFn, 'only', timeout);
+  it.skip = (name, testFn, timeout) => registerTest(name, testFn, 'skip', timeout);
+  it.todo = (name) => registerTest(name, undefined, 'todo');
+
+  const makeItEach = (mode) => createEach((title, callback, args, timeout) => {
+    if (typeof callback !== 'function') {
+      throw usageError(`it.each("${title}") requires a callback function`);
+    }
+    registerTest(title, () => callback(...args), mode, timeout);
+  });
+
+  it.each = makeItEach('run');
+  it.only.each = makeItEach('only');
+  it.skip.each = makeItEach('skip');
+
+  const describe = (name, cb) => registerSuite(name, cb, 'run');
+  describe.only = (name, cb) => registerSuite(name, cb, 'only');
+  describe.skip = (name, cb) => registerSuite(name, cb, 'skip');
+
+  const makeDescribeEach = (mode) => createEach((title, callback, args) => {
+    if (typeof callback !== 'function') {
+      throw usageError(`describe.each("${title}") requires a callback function`);
+    }
+    registerSuite(title, () => callback(...args), mode);
+  });
+
+  describe.each = makeDescribeEach('run');
+  describe.only.each = makeDescribeEach('only');
+  describe.skip.each = makeDescribeEach('skip');
+
+  // `test` is a complete alias of `it`, including every sub-API.
+  const test = (name, testFn, timeout) => it(name, testFn, timeout);
+  test.only = it.only;
+  test.skip = it.skip;
+  test.todo = it.todo;
+  test.each = it.each;
+
+  const registerHook = (bucket) => (hookFn, timeout) => {
+    if (typeof hookFn !== 'function') {
+      throw usageError(`${bucket} expects a function, got ${print(hookFn)}`);
+    }
+    const resolvedTimeout = validateTimeout(timeout, bucket);
+    currentSuite[bucket].push({ fn: hookFn, timeout: resolvedTimeout });
+  };
+
+  const beforeAll = registerHook('beforeAll');
+  const afterAll = registerHook('afterAll');
+  const beforeEach = registerHook('beforeEach');
+  const afterEach = registerHook('afterEach');
+
+  // ==========================================================================
+  // 12. RUNNER
+  // ==========================================================================
+
+  const suiteHasOnly = (suite) => suite.tests.some(test => test.mode === 'only')
+    || suite.suites.some(child => child.mode === 'only' || suiteHasOnly(child));
+
+  const describeError = (error) => {
+    if (error instanceof Error) return error.stack || `${error.name}: ${error.message}`;
+    return `Non-error thrown: ${print(error)}`;
+  };
+
+  const errorMessage = (error) => (error instanceof Error ? error.message : `Non-error thrown: ${print(error)}`);
+
+  const normalizeRunOptions = (options) => {
+    let config = options;
+    // Backwards compatibility: run(suiteObject) used to be the recursive entry point.
+    if (config && Array.isArray(config.tests) && Array.isArray(config.suites)) {
+      config = { suite: config };
+    }
+    config = config || {};
+    return {
+      suite: config.suite || rootSuite,
+      silent: config.silent === true,
+      reset: config.reset !== false,
+      setExitCode: config.setExitCode !== false,
+      exitOnFail: config.exitOnFail === true,
+      throwOnFail: config.throwOnFail === true,
+    };
+  };
+
+  const runHooks = async (hooks, phase, suiteName, onError) => {
+    for (const hook of hooks) {
+      try {
+        const label = `${phase} hook${hook.fn.name ? ` "${hook.fn.name}"` : ''} in "${suiteName}"`;
+        await withTimeout(() => hook.fn(), hook.timeout, label);
+      } catch (error) {
+        onError(error);
+      }
+    }
+  };
+
+  const runSuite = async (suite, context) => {
+    const { parents, stats, options, inheritedError } = context;
+    const log = options.silent ? () => {} : (...args) => console.log(...args);
+
+    const suitePath = suite === context.rootRef ? [] : [...parents.map(p => p.name), suite.name];
+    const skipped = context.skipped || suite.mode === 'skip';
+    const focused = context.focused || suite.mode === 'only';
+
+    if (suite !== context.rootRef) {
+      log(`%c\nFOLDER: ${suite.name}`, 'font-weight: bold; color: #4A90E2;');
+    }
+
+    let suiteError = inheritedError;
+
+    if (!skipped && !suiteError) {
+      await runHooks(suite.beforeAll, 'beforeAll', suite.name, (error) => {
+        if (!suiteError) suiteError = { phase: 'beforeAll', error, suite: suite.name };
+      });
+    }
 
     for (const test of suite.tests) {
-      if (test.mode === 'skip' || (globalOnly && test.mode !== 'only')) {
-        console.log(`  %c⚪ ${test.name} (skipped)`, 'color: #95a5a6');
+      const testPath = [...suitePath, test.name].join(' > ');
+
+      if (test.mode === 'todo') {
+        log(`  %c📝 ${test.name} (todo)`, 'color: #9b59b6');
+        stats.todo++;
+        continue;
+      }
+
+      const isSkipped = skipped
+        || test.mode === 'skip'
+        || (context.globalOnly && !(focused || test.mode === 'only'));
+
+      if (isSkipped) {
+        log(`  %c⚪ ${test.name} (skipped)`, 'color: #95a5a6');
         stats.skip++;
         continue;
       }
 
-      currentTestName = test.name;
-      snapshotIndex = 0;
+      if (suiteError) {
+        // A failed beforeAll invalidates every test in this block (and nested blocks).
+        stats.fail++;
+        stats.failures.push({
+          test: testPath,
+          phase: suiteError.phase,
+          error: suiteError.error,
+          message: errorMessage(suiteError.error),
+        });
+        if (!options.silent) {
+          console.group(`  %c❌ ${test.name}`, 'color: #e74c3c');
+          console.error(`Failed in ${suiteError.phase} hook of "${suiteError.suite}": ${errorMessage(suiteError.error)}`);
+          console.groupEnd();
+        }
+        continue;
+      }
 
-      assertionCount = 0;      // Reset for this test
-      expectedAssertions = null; // Reset target
+      currentTestName = test.name;
+      currentSuitePath = suitePath;
+      snapshotIndex = 0;
+      resetAssertionState();
+
+      let failure = null;
+      const recordFailure = (phase, error) => {
+        if (!failure) failure = { phase, error };
+      };
+
+      const chain = [...parents, suite];
 
       try {
-        const allSuites = [...parents, suite];
-        for (const s of allSuites) for (const hook of s.beforeEach) await hook();
-
-        await test.fn();
-
-        // Check if expect.assertions(n) was met
-        if (expectedAssertions !== null && assertionCount !== expectedAssertions) {
-          throw new Error(`Expected ${expectedAssertions} assertions but saw ${assertionCount}`);
+        for (const parentSuite of chain) {
+          for (const hook of parentSuite.beforeEach) {
+            if (failure) break;
+            try {
+              const label = `beforeEach hook${hook.fn.name ? ` "${hook.fn.name}"` : ''} for test "${testPath}"`;
+              await withTimeout(() => hook.fn(), hook.timeout, label);
+            } catch (error) {
+              recordFailure('beforeEach', error);
+            }
+          }
+          if (failure) break;
         }
 
-        console.log(`  %c✅ ${test.name}`, 'color: #2ecc71');
-        stats.pass++;
-      } catch (e) {
-        console.group(`  %c❌ ${test.name}`, 'color: #e74c3c');
-        console.error(e.message);
-        console.groupEnd();
-        stats.fail++;
+        if (!failure) {
+          try {
+            await withTimeout(() => test.fn(), test.timeout, `Test "${testPath}"`);
+          } catch (error) {
+            recordFailure('test', error);
+          }
+        }
+
+        // afterEach always runs (all of them), even after earlier failures.
+        for (const parentSuite of [...chain].reverse()) {
+          for (const hook of parentSuite.afterEach) {
+            try {
+              const label = `afterEach hook${hook.fn.name ? ` "${hook.fn.name}"` : ''} for test "${testPath}"`;
+              await withTimeout(() => hook.fn(), hook.timeout, label);
+            } catch (error) {
+              recordFailure('afterEach', error);
+            }
+          }
+        }
+
+        // Assertion contracts are validated *after* afterEach so hook assertions count.
+        if (!failure) {
+          if (expectedAssertions !== null && assertionCount !== expectedAssertions) {
+            recordFailure('test', new Error(
+              `Expected ${expectedAssertions} assertions but saw ${assertionCount}`
+            ));
+          } else if (requiresAssertions && assertionCount === 0) {
+            recordFailure('test', new Error('Expected at least one assertion to be called but received none'));
+          }
+        }
       } finally {
-        // 1. GLOBAL AUTO-CLEANUP
-        mockRestoreAll(); 
+        // Automatic cleanup: spies restored, fake timers reverted.
+        restoreAllMocks();
+        if (isUsingFakeTimers) useRealTimers();
+        currentTestName = '';
+        currentSuitePath = [];
+      }
 
-        // 2. Run afterEach hooks
-        const allSuitesRev = [...parents, suite].reverse();
-        for (const s of allSuitesRev) {
-          for (const hook of s.afterEach) await hook();
+      if (failure) {
+        stats.fail++;
+        stats.failures.push({
+          test: testPath,
+          phase: failure.phase,
+          error: failure.error,
+          message: errorMessage(failure.error),
+        });
+        if (!options.silent) {
+          console.group(`  %c❌ ${test.name}`, 'color: #e74c3c');
+          console.error(failure.phase === 'test'
+            ? describeError(failure.error)
+            : `Failed in ${failure.phase} hook: ${describeError(failure.error)}`);
+          console.groupEnd();
         }
+      } else {
+        stats.pass++;
+        log(`  %c✅ ${test.name}`, 'color: #2ecc71');
       }
     }
 
-    for (const child of suite.suites) await run(child, [...parents, suite], stats);
-    for (const hook of suite.afterAll) await hook();
-    
-    // Only log the summary when the root suite finishes
-    if (suite === rootSuite) {
-        const total = stats.pass + stats.fail + stats.skip;
-        console.log(`%c\n--------------------------------------`, 'color: #7f8c8d');
-        console.log(
-          `%cTests:  %c${stats.fail} failed%c, %c${stats.pass} passed%c, %c${stats.skip} skipped%c, ${total} total`,
-          'font-weight: bold',
-          stats.fail ? 'color: #e74c3c; font-weight: bold' : 'color: #7f8c8d',
-          'color: #000',
-          'color: #2ecc71; font-weight: bold',
-          'color: #000',
-          'color: #f1c40f; font-weight: bold',
-          'color: #000'
-        );
-        console.log(`%c--------------------------------------\n`, 'color: #7f8c8d');
-
-        // Reset for next manual run in console
-        rootSuite = createSuite();
-        currentSuite = rootSuite;
+    for (const child of suite.suites) {
+      await runSuite(child, {
+        ...context,
+        parents: suite === context.rootRef ? [] : [...parents, suite],
+        skipped,
+        focused,
+        inheritedError: suiteError,
+      });
     }
+
+    if (!skipped) {
+      await runHooks(suite.afterAll, 'afterAll', suite.name, (error) => {
+        stats.fail++;
+        stats.failures.push({
+          test: `${suitePath.join(' > ') || 'root'} > afterAll hook`,
+          phase: 'afterAll',
+          error,
+          message: errorMessage(error),
+        });
+        if (!options.silent) {
+          console.error(`  ❌ afterAll hook failed in "${suite.name}": ${errorMessage(error)}`);
+        }
+      });
+    }
+  };
+
+  /**
+   * Executes the registered suite tree.
+   * @param {Object} [options]
+   * @param {Object}  [options.suite]        Suite to execute (defaults to the root suite).
+   * @param {boolean} [options.silent]       Suppress console reporting.
+   * @param {boolean} [options.reset]        Reset the root suite afterwards (default true).
+   * @param {boolean} [options.setExitCode]  In Node, set process.exitCode = 1 on failure (default true).
+   * @param {boolean} [options.exitOnFail]   In Node, hard-exit the process on failure (default false).
+   * @param {boolean} [options.throwOnFail]  Throw an aggregated error on failure (default false).
+   * @returns {Promise<Object>} stats { pass, fail, skip, todo, total, failures }
+   */
+  const run = async (options = {}) => {
+    const config = normalizeRunOptions(options);
+    const stats = { pass: 0, fail: 0, skip: 0, todo: 0, total: 0, failures: [] };
+    const target = config.suite;
+
+    await runSuite(target, {
+      parents: [],
+      stats,
+      options: config,
+      rootRef: target,
+      skipped: false,
+      focused: false,
+      globalOnly: suiteHasOnly(target),
+      inheritedError: null,
+    });
+
+    stats.total = stats.pass + stats.fail + stats.skip + stats.todo;
+
+    if (!config.silent) {
+      console.log('%c\n--------------------------------------', 'color: #7f8c8d');
+      console.log(
+        `%cTests:  %c${stats.fail} failed%c, %c${stats.pass} passed%c, %c${stats.skip} skipped%c, %c${stats.todo} todo%c, ${stats.total} total`,
+        'font-weight: bold',
+        stats.fail ? 'color: #e74c3c; font-weight: bold' : 'color: #7f8c8d',
+        'color: #000',
+        'color: #2ecc71; font-weight: bold',
+        'color: #000',
+        'color: #f1c40f; font-weight: bold',
+        'color: #000',
+        'color: #9b59b6; font-weight: bold',
+        'color: #000'
+      );
+      console.log('%c--------------------------------------\n', 'color: #7f8c8d');
+    }
+
+    if (config.reset && target === rootSuite) {
+      rootSuite = createSuite();
+      currentSuite = rootSuite;
+    }
+
+    if (stats.fail > 0) {
+      // Signal failure in a way CI can act on, without breaking browser usage.
+      if (isNodeRuntime && config.setExitCode) process.exitCode = 1;
+      if (isNodeRuntime && config.exitOnFail) process.exit(1);
+      if (config.throwOnFail) {
+        const summary = stats.failures.map(f => `  • ${f.test} (${f.phase}): ${f.message}`).join('\n');
+        const error = new Error(`${stats.fail} test(s) failed:\n${summary}`);
+        error.stats = stats;
+        throw error;
+      }
+    }
+
     return stats;
   };
 
+  /** Clears every registered suite/test without executing anything. */
+  const resetSuites = () => {
+    rootSuite = createSuite();
+    currentSuite = rootSuite;
+    return rootSuite;
+  };
 
+  const getRootSuite = () => rootSuite;
 
+  // ==========================================================================
+  // 13. WAIT-FOR
+  // ==========================================================================
 
+  /**
+   * Asynchronously polls an assertion callback until it passes or times out.
+   * @param {Function} callback - Assertion block; may be async.
+   * @param {Object} [options]
+   * @param {number} [options.timeout=1000]
+   * @param {number} [options.interval=50]
+   * @return {Promise<void>}
+   */
+  async function waitFor(callback, options = {}) {
+    if (typeof callback !== 'function') {
+      throw usageError(`waitFor expects a callback function, got ${print(callback)}`);
+    }
+    const timeout = options.timeout ?? 1000;
+    const interval = options.interval ?? 50;
+    const startTime = Date.now();
+    const scheduler = nativeTimers ? nativeTimers.setTimeout : globalScope.setTimeout;
 
-  // Virtual clock configuration states
-  let nativeTimers = { setTimeout, setInterval, clearTimeout, clearInterval, Date };
-  let virtualClockTime = 0;
-  let timerIdCounter = 0;
-  let pendingVirtualTasks = [];
-  let isUsingFakeTimers = false;
-
-  // Custom virtual Task constructor schema
-  class VirtualTask {
-    constructor(callback, delay, isRecurring, args) {
-      this.id = ++timerIdCounter;
-      this.callback = callback;
-      this.delay = delay;
-      this.isRecurring = isRecurring;
-      this.args = args;
-      this.expiryTime = virtualClockTime + delay;
+    let lastError = null;
+    for (;;) {
+      try {
+        await callback();
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+      if (Date.now() - startTime >= timeout) {
+        throw new Error(
+          `waitFor timed out after ${timeout}ms. Last internal runner exception was: ${errorMessage(lastError)}`
+        );
+      }
+      await new Promise(resolve => scheduler(resolve, interval));
     }
   }
 
+  // ==========================================================================
+  // 14. FAKE TIMERS
+  // ==========================================================================
+
+  const MAX_TIMER_ITERATIONS = 100000;
+
+  let nativeTimers = null;
+  let virtualClockTime = 0;
+  let timerIdCounter = 0;
+  let taskSequence = 0;
+  let pendingVirtualTasks = new Map();
+  let isUsingFakeTimers = false;
+
+  class VirtualTask {
+    constructor(callback, delay, isRecurring, args) {
+      const numericDelay = Number(delay);
+      const safeDelay = Number.isFinite(numericDelay) && numericDelay > 0 ? numericDelay : 0;
+      this.id = ++timerIdCounter;
+      this.sequence = ++taskSequence;
+      this.callback = callback;
+      // Recurring tasks are clamped to >= 1ms so zero-delay intervals cannot spin forever.
+      this.delay = isRecurring ? Math.max(1, safeDelay) : safeDelay;
+      this.isRecurring = isRecurring;
+      this.args = args;
+      this.cancelled = false;
+      this.expiryTime = virtualClockTime + this.delay;
+    }
+  }
+
+  const sortedTasks = () => [...pendingVirtualTasks.values()]
+    .filter(task => !task.cancelled)
+    .sort((a, b) => (a.expiryTime - b.expiryTime) || (a.sequence - b.sequence));
+
+  const cancelTask = (id) => {
+    const task = pendingVirtualTasks.get(id);
+    if (task) {
+      task.cancelled = true;
+      pendingVirtualTasks.delete(id);
+    }
+  };
+
+  const scheduleTask = (callback, delay, isRecurring, args) => {
+    if (typeof callback !== 'function') {
+      throw usageError(`Fake timers require a callback function, got ${print(callback)}`);
+    }
+    const task = new VirtualTask(callback, delay, isRecurring, args);
+    pendingVirtualTasks.set(task.id, task);
+    return task.id;
+  };
+
   function useFakeTimers() {
     if (isUsingFakeTimers) return;
+    nativeTimers = {
+      setTimeout: globalScope.setTimeout,
+      clearTimeout: globalScope.clearTimeout,
+      setInterval: globalScope.setInterval,
+      clearInterval: globalScope.clearInterval,
+    };
     isUsingFakeTimers = true;
     virtualClockTime = 0;
-    pendingVirtualTasks = [];
+    pendingVirtualTasks = new Map();
 
-    // Hijack the global scope macro-task execution threads
-    globalScope.setTimeout = (cb, delay = 0, ...args) => {
-      const task = new VirtualTask(cb, delay, false, args);
-      pendingVirtualTasks.push(task);
-      return task.id;
-    };
-
-    globalScope.clearTimeout = (id) => {
-      pendingVirtualTasks = pendingVirtualTasks.filter(task => task.id !== id);
-    };
-
-    globalScope.setInterval = (cb, delay = 0, ...args) => {
-      const task = new VirtualTask(cb, delay, true, args);
-      pendingVirtualTasks.push(task);
-      return task.id;
-    };
-
-    globalScope.clearInterval = (id) => {
-      pendingVirtualTasks = pendingVirtualTasks.filter(task => task.id !== id);
-    };
+    globalScope.setTimeout = (cb, delay = 0, ...args) => scheduleTask(cb, delay, false, args);
+    globalScope.setInterval = (cb, delay = 0, ...args) => scheduleTask(cb, delay, true, args);
+    globalScope.clearTimeout = (id) => cancelTask(id);
+    globalScope.clearInterval = (id) => cancelTask(id);
   }
 
   function useRealTimers() {
     if (!isUsingFakeTimers) return;
     isUsingFakeTimers = false;
-    // Restore original environmental system primitives cleanly
-    Object.assign(globalScope, nativeTimers);
+    if (nativeTimers) {
+      globalScope.setTimeout = nativeTimers.setTimeout;
+      globalScope.clearTimeout = nativeTimers.clearTimeout;
+      globalScope.setInterval = nativeTimers.setInterval;
+      globalScope.clearInterval = nativeTimers.clearInterval;
+    }
+    pendingVirtualTasks = new Map();
   }
 
+  const assertFakeTimers = (apiName) => {
+    if (!isUsingFakeTimers) {
+      throw usageError(`Fake timers are not enabled. Call jest.useFakeTimers() before ${apiName}().`);
+    }
+  };
+
+  /** Executes a single task, handling re-queueing of intervals and cancellation. */
+  const executeTask = (task) => {
+    virtualClockTime = task.expiryTime;
+    if (task.isRecurring) {
+      task.expiryTime = virtualClockTime + task.delay;
+    } else {
+      pendingVirtualTasks.delete(task.id);
+    }
+    // Exceptions propagate to the caller (Jest-like); clock state stays consistent.
+    task.callback(...task.args);
+  };
+
   function advanceTimersByTime(ms) {
-    if (!isUsingFakeTimers) throw new Error("Fake timers are not enabled. Call jest.useFakeTimers() first.");
-    
-    const targetTime = virtualClockTime + ms;
+    assertFakeTimers('advanceTimersByTime');
+    const step = Number(ms);
+    const targetTime = virtualClockTime + (Number.isFinite(step) && step > 0 ? step : 0);
+    let iterations = 0;
 
-    // Run virtual clock cycle iterations until we catch up to the advanced timeframe step target
-    while (pendingVirtualTasks.length > 0) {
-      // Sort tasks chronically so the earliest target expiry executes first
-      pendingVirtualTasks.sort((a, b) => a.expiryTime - b.expiryTime);
-      const nextTask = pendingVirtualTasks[0];
-
-      if (nextTask.expiryTime > targetTime) break; // No more tasks due inside this step frame window
-
-      // Fast-forward virtual clock time pointer directly to the task execution step point
-      virtualClockTime = nextTask.expiryTime;
-      pendingVirtualTasks.shift();
-
-      try {
-        nextTask.callback(...nextTask.args);
-      } catch (e) {
-        // Allow execution exceptions to bubble without destroying internal clock array states
+    for (;;) {
+      const [next] = sortedTasks();
+      if (!next || next.expiryTime > targetTime) break;
+      if (++iterations > MAX_TIMER_ITERATIONS) {
+        throw new Error(
+          `Aborting after running ${MAX_TIMER_ITERATIONS} timers, assuming an infinite loop.`
+        );
       }
-
-      // Re-queue recurring interval streams
-      if (nextTask.isRecurring) {
-        nextTask.expiryTime = virtualClockTime + nextTask.delay;
-        pendingVirtualTasks.push(nextTask);
-      }
+      executeTask(next);
     }
 
-    // Ensure the clock settles exactly on the targeted advanced timeline step point
     virtualClockTime = targetTime;
   }
 
-
-  // Setup a safe isomorphic CommonJS bridge for Node.js ES Modules
-  let esmRequire;
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-    try {
-      const { createRequire } = await import('module');
-      esmRequire = createRequire(import.meta.url);
-    } catch (e) {
-      // Fallback if compilation environment dynamically restricts imports
+  function runAllTimers() {
+    assertFakeTimers('runAllTimers');
+    let iterations = 0;
+    for (;;) {
+      const [next] = sortedTasks();
+      if (!next) break;
+      if (++iterations > MAX_TIMER_ITERATIONS) {
+        throw new Error(
+          `Aborting after running ${MAX_TIMER_ITERATIONS} timers, assuming an infinite loop.`
+        );
+      }
+      executeTask(next);
     }
   }
 
-  const globalScope = typeof window !== 'undefined' ? window : globalThis;
+  function runOnlyPendingTimers() {
+    assertFakeTimers('runOnlyPendingTimers');
+    // Snapshot: timers scheduled by these callbacks are not executed in this pass.
+    const snapshot = sortedTasks();
+    for (const task of snapshot) {
+      if (task.cancelled || !pendingVirtualTasks.has(task.id)) continue;
+      executeTask(task);
+    }
+  }
+
+  function advanceTimersToNextTimer(steps = 1) {
+    assertFakeTimers('advanceTimersToNextTimer');
+    for (let i = 0; i < steps; i++) {
+      const [next] = sortedTasks();
+      if (!next) break;
+      executeTask(next);
+    }
+  }
+
+  function clearAllTimers() {
+    pendingVirtualTasks = new Map();
+  }
+
+  function getTimerCount() {
+    return sortedTasks().length;
+  }
+
+  const getTimerTime = () => virtualClockTime;
+
+  // ==========================================================================
+  // 15. MODULE REGISTRY (explicit registry — NOT an import interceptor)
+  // ==========================================================================
+
+  const moduleRegistry = new Map();
+
+  /**
+   * Registers mock exports under a module name. Real `import`/`require` calls are
+   * NOT intercepted; consumers must fetch the mock via jest.requireMock/getMock
+   * (or read the global alias when the name is a valid identifier).
+   */
+  const registerMock = (moduleName, factory) => {
+    if (typeof moduleName !== 'string' || moduleName.length === 0) {
+      throw usageError(`jest.mock expects a module name string, got ${print(moduleName)}`);
+    }
+    if (factory !== undefined && typeof factory !== 'function') {
+      throw usageError(`jest.mock expects a factory function, got ${print(factory)}`);
+    }
+    const mockExports = factory ? factory() : {};
+    moduleRegistry.set(moduleName, mockExports);
+    try {
+      // Convenience global alias (kept for backwards compatibility).
+      globalScope[moduleName] = mockExports;
+    } catch (e) { /* frozen/readonly globals are simply skipped */ }
+    return mockExports;
+  };
+
+  const getMock = (moduleName) => {
+    if (!moduleRegistry.has(moduleName)) {
+      throw usageError(
+        `Module "${moduleName}" is not mocked. Register it first with jest.mock("${moduleName}", factory).`
+      );
+    }
+    return moduleRegistry.get(moduleName);
+  };
+
+  const hasMock = (moduleName) => moduleRegistry.has(moduleName);
+
+  const unmock = (moduleName) => moduleRegistry.delete(moduleName);
+
+  const resetModuleRegistry = () => moduleRegistry.clear();
+
+  // ==========================================================================
+  // 16. PUBLIC SURFACE
+  // ==========================================================================
 
   const jest = {
+    // DSL
     describe,
     it,
+    test,
     expect,
     run,
-    fn,
-    spyOn,
+    resetSuites,
+    getRootSuite,
     beforeAll,
     afterAll,
     beforeEach,
     afterEach,
+
+    // Mocking
+    fn,
+    spyOn,
+    clearAllMocks,
+    resetAllMocks,
+    restoreAllMocks,
+
+    // Matchers
     extendExpect,
+    AssertionError: JestLiteAssertionError,
+
+    // Async helpers
     waitFor,
+
+    // Timers
     useFakeTimers,
     useRealTimers,
     advanceTimersByTime,
+    advanceTimersToNextTimer,
+    runAllTimers,
+    runOnlyPendingTimers,
+    clearAllTimers,
+    getTimerCount,
+    getTimerTime,
 
-    // Registers a mock for a "module" name
-    mock: (moduleName, factory) => {
-      const mockExports = factory ? factory() : {};
-      
-      // FIX: Assign to the global scope reference directly instead of using Object.assign
-      // This protects against read-only/frozen object immutability crashes in ES Modules
-      globalScope[moduleName] = mockExports;
-      
-      moduleRegistry.set(moduleName, mockExports);
-    },
-
-    // Retrieves the mocked version of a module
-    requireMock: (moduleName) => {
-      if (!moduleRegistry.has(moduleName)) {
-        throw new Error(`Module "${moduleName}" is not mocked.`);
-      }
-      return moduleRegistry.get(moduleName);
-    },
-
-    // Resets all mocks and spies in the registry
-    clearAllMocks: () => {
-      // 1. Clear module registry mock history stacks
-      moduleRegistry.forEach(mod => {
-        Object.values(mod).forEach(val => {
-          if (val && typeof val.mockClear === 'function') val.mockClear();
-        });
-      });
-
-      // 2. Clear dynamic spy history tracking arrays
-      activeSpiesList.forEach(spy => {
-        if (typeof spy.mockClear === 'function') spy.mockClear();
-      });
-    },
+    // Module registry
+    mock: registerMock,
+    registerMock,
+    requireMock: getMock,
+    getMock,
+    hasMock,
+    unmock,
+    resetModuleRegistry,
   };
 
-  // Expose the core 'jest' toolkit to the global context wrapper
-  Object.assign(globalScope, { jest });
+  Object.assign(globalScope, {
+    jest,
+    describe,
+    it,
+    test,
+    expect,
+    run,
+    waitFor,
+    beforeAll,
+    afterAll,
+    beforeEach,
+    afterEach,
+  });
 })();
 
 // Native modern ES Module exports layout
 export const {
   describe,
   it,
+  test,
   expect,
   run,
+  resetSuites,
+  getRootSuite,
   fn,
   spyOn,
   beforeAll,
@@ -1154,13 +2260,27 @@ export const {
   beforeEach,
   afterEach,
   extendExpect,
+  AssertionError,
   waitFor,
   mock,
+  registerMock,
   requireMock,
+  getMock,
+  hasMock,
+  unmock,
+  resetModuleRegistry,
   clearAllMocks,
+  resetAllMocks,
+  restoreAllMocks,
   useFakeTimers,
   useRealTimers,
   advanceTimersByTime,
+  advanceTimersToNextTimer,
+  runAllTimers,
+  runOnlyPendingTimers,
+  clearAllTimers,
+  getTimerCount,
+  getTimerTime,
 } = jest;
 
 // Provide a clean default bundle export configuration mapping

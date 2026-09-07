@@ -1,4 +1,4 @@
-name: Node.js CI
+name: Test
 
 # Trigger the workflow on push or pull request to the main branch
 on:
@@ -8,13 +8,12 @@ on:
     branches: [ main, master ]
 
 jobs:
-  test-and-verify:
+  node:
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        # Test across current LTS and the latest Node.js release versions
-        node-version: [20.x, 22.x, 24.x]
+        node-version: [22.x, 24.x, 26.x]
 
     steps:
     - name: Checkout Repository Source
@@ -31,3 +30,45 @@ jobs:
 
     - name: Execute Framework Test Runner
       run: npm test
+
+    - name: Test Installed Package
+      run: npm run test:package
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository Source
+      uses: actions/checkout@v4
+
+    - name: Use Node.js 24
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24.x
+        cache: npm
+
+    - name: Install Development Dependencies
+      run: npm ci
+
+    - name: Measure Coverage
+      run: npm run test:coverage
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository Source
+      uses: actions/checkout@v4
+
+    - name: Use Node.js 24
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24.x
+        cache: npm
+
+    - name: Install Development Dependencies
+      run: npm ci
+
+    - name: Install Chromium
+      run: npx playwright install --with-deps chromium
+
+    - name: Run Browser Smoke Test
+      run: npm run test:browser
