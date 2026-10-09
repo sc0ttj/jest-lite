@@ -506,16 +506,18 @@ it('fast-forwards a 10s debounce instantly', () => {
 });
 ```
 
-- `useFakeTimers()` replaces the global `setTimeout`/`clearTimeout`/`setInterval`/`clearInterval` with a virtual scheduler (a synchronous, sequence-ordered virtual clock starting at `0`).
+- `useFakeTimers()` replaces the global `setTimeout`/`clearTimeout`/`setInterval`/`clearInterval` with a virtual scheduler (a synchronous, sequence-ordered elapsed-time clock starting at `0`). It also freezes `Date` and, when available, `performance.now()` at the values observed when fake timers are enabled.
 - `advanceTimersByTime(ms)` — runs every due task in order, advancing the virtual clock to `ms` from now.
 - `runAllTimers()` — runs every pending (and newly scheduled-by-callbacks) task until none remain; aborts after 100,000 iterations to guard against infinite `setInterval` loops.
 - `runOnlyPendingTimers()` — runs a single snapshot of currently-pending tasks; timers scheduled *by those callbacks* are left pending, not run in the same pass.
 - `advanceTimersToNextTimer(steps = 1)` — executes the next `steps` due tasks regardless of elapsed virtual time.
 - `clearAllTimers()` — drops all pending tasks (does not affect the virtual clock's current time).
 - `getTimerCount()` / `getTimerTime()` — number of pending tasks / current virtual clock time.
-- `useRealTimers()` restores the native timer functions; the runner also calls this automatically after every test as a safety net.
+- `useRealTimers()` restores the native timer and clock functions; the runner also calls this automatically after every test as a safety net.
 
-**Limitation:** only `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval` are virtualized. `Date.now()`, `new Date()`, `performance.now()`, etc. are **not** mocked or advanced — code that reads wall-clock time directly will still see real time even while fake timers are active.
+While fake timers are active, `Date.now()` and zero-argument `new Date()` return the activation timestamp plus the elapsed virtual time. Calling `Date()` as a function follows the same virtual wall clock, while explicit constructor arguments such as `new Date(0)` keep their native meaning. `performance.now()` retains its activation offset and advances by the same virtual duration. Real time passing by itself does not move either fake clock.
+
+`jest-lite` does not currently implement `jest.setSystemTime()` or `jest.getRealSystemTime()`; fake time always starts from the real clock values captured by `useFakeTimers()`.
 
 **Interaction with test/hook timeouts:** a test or hook's own `timeout` (see [Per-test timeouts](#per-test-timeouts) and [Lifecycle hooks](#2-lifecycle-hooks)) is always measured against the real, native timer captured when `jest-lite` loads, never against the virtual clock. This means `jest.useFakeTimers()` never has any effect — good or bad — on how long a test/hook is allowed to run in wall-clock time.
 
@@ -530,11 +532,33 @@ it('verifies UI configuration snapshot', () => {
 });
 ```
 
+HTML snapshots work by snapshotting the serialized markup string explicitly:
+
+```javascript
+it('captures the button after interaction', () => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Save';
+  button.addEventListener('click', () => {
+    button.disabled = true;
+    button.textContent = 'Saved';
+  });
+
+  button.click();
+
+  expect(button.outerHTML).toMatchSnapshot('saved_button_html');
+  // Use container.innerHTML instead when only the container's children matter.
+});
+```
+
 - **Storage:** in Node, snapshots are persisted as JSON to `./__snapshots__/jest-lite.snap` (relative to `process.cwd()`), keyed by snapshot name. In browsers (or when Node's `fs`/`path` aren't reachable), snapshots go to `localStorage`, falling back to an in-memory cache on `globalThis` if `localStorage` is unavailable.
 - **Naming:** if you don't pass a name, the key is generated as `` snap__<suite path joined by " > ">__<test name>__<call index> `` — the call index increments per `toMatchSnapshot()` call within the same test, so multiple snapshots in one test don't collide. Passing an explicit string name overrides this (and is your responsibility to keep unique across the whole run).
 - **First run / update mode:** if no snapshot is stored yet for a key, it's written and the assertion passes. To force re-recording of existing snapshots, set `globalThis.updateSnapshots = true` (or `window.updateSnapshots` in a browser) before calling `run()`.
 - **Serialization:** values are `JSON.stringify`-d (pretty-printed) with functions rendered as `"[Function name]"`, `undefined` as `"[undefined]"`, circular references as `"[Circular]"`, and anything that can't be serialized at all collapses to `"[Unserializable]"`.
+- **HTML strings:** `outerHTML` captures the selected element, its attributes, and descendants; `innerHTML` captures only its children. The string is compared exactly and is stored as a JSON string value, so the snapshot store contains surrounding quotes and escaped characters. Normalize dynamic IDs, timestamps, generated class names, or other non-deterministic markup before snapshotting.
 - Snapshot mismatches log an `Expected`/`Received`/`Fix` diff via `console.groupCollapsed` (unless `run({ silent: true })`) and throw a normal assertion failure.
+
+**Compared with Jest:** Jest uses `pretty-format` and DOM-aware snapshot serializers, so `expect(element).toMatchSnapshot()` can produce readable formatted markup directly. `jest-lite` has no DOM serializer or snapshot serializer plugin API: use `expect(element.outerHTML).toMatchSnapshot()` instead. It also does not implement inline snapshots or Jest's executable `.snap` module format; its Node snapshot file is a JSON object of serialized strings.
 
 ---
 
@@ -616,6 +640,8 @@ it('polls until a status banner updates', async () => {
 Repeatedly invokes the callback (may be async) until it doesn't throw, or until `timeout` (default `1000`ms) elapses polling every `interval` (default `50`ms), at which point it throws an `Error` describing the last assertion failure it saw.
 
 `timeout` must be a non-negative finite number and `interval` must be a positive finite number; invalid values throw a usage error before polling starts. On timeout, the thrown error also exposes the final callback failure as `error.cause` for structured diagnostics.
+
+`waitFor` always measures deadlines and schedules polling against real time. If fake timers are active, advancing or leaving the virtual clock frozen does not change its timeout behavior.
 
 ---
 

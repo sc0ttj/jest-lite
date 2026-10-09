@@ -77,6 +77,7 @@ await (async function () {
   // always schedules against these, so fake timers can never disable a test's own timeout.
   const REAL_SET_TIMEOUT = globalScope.setTimeout.bind(globalScope);
   const REAL_CLEAR_TIMEOUT = globalScope.clearTimeout.bind(globalScope);
+  const REAL_DATE_NOW = globalScope.Date.now.bind(globalScope.Date);
 
   const isNodeRuntime = typeof process !== 'undefined'
     && !!process.versions
@@ -1961,7 +1962,7 @@ await (async function () {
     if (typeof interval !== 'number' || !Number.isFinite(interval) || interval <= 0) {
       throw usageError(`waitFor interval must be a positive finite number, got ${print(interval)}`);
     }
-    const startTime = Date.now();
+    const startTime = REAL_DATE_NOW();
     const scheduler = nativeTimers ? nativeTimers.setTimeout : globalScope.setTimeout;
 
     let lastError = null;
@@ -1972,7 +1973,7 @@ await (async function () {
       } catch (error) {
         lastError = error;
       }
-      if (Date.now() - startTime >= timeout) {
+      if (REAL_DATE_NOW() - startTime >= timeout) {
         const timeoutError = new Error(
           `waitFor timed out after ${timeout}ms. Last internal runner exception was: ${errorMessage(lastError)}`
         );
@@ -1995,6 +1996,78 @@ await (async function () {
   let taskSequence = 0;
   let pendingVirtualTasks = new Map();
   let isUsingFakeTimers = false;
+
+  const currentVirtualWallTime = () => nativeTimers.wallClockEpoch + virtualClockTime;
+
+  const createVirtualDate = (NativeDate) => {
+    function VirtualDate(...args) {
+      if (!new.target) {
+        return new NativeDate(currentVirtualWallTime()).toString();
+      }
+      const constructorArgs = args.length === 0 ? [currentVirtualWallTime()] : args;
+      return Reflect.construct(NativeDate, constructorArgs, new.target);
+    }
+
+    Object.setPrototypeOf(VirtualDate, NativeDate);
+    VirtualDate.prototype = NativeDate.prototype;
+    Object.defineProperty(VirtualDate, 'name', { value: 'Date' });
+    Object.defineProperty(VirtualDate, 'length', { value: NativeDate.length });
+    Object.defineProperty(VirtualDate, 'now', {
+      configurable: true,
+      writable: true,
+      value: currentVirtualWallTime,
+    });
+    return VirtualDate;
+  };
+
+  const installVirtualPerformanceNow = (state) => {
+    if (!state.performance) return;
+    const { target, ownDescriptor, epoch } = state.performance;
+    const descriptor = ownDescriptor
+      ? { ...ownDescriptor, value: () => epoch + virtualClockTime }
+      : {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: () => epoch + virtualClockTime,
+        };
+
+    if (ownDescriptor && !Object.hasOwn(ownDescriptor, 'value')) {
+      if (!ownDescriptor.configurable) {
+        throw new TypeError('performance.now is not configurable');
+      }
+      delete descriptor.get;
+      delete descriptor.set;
+      descriptor.writable = true;
+    } else if (ownDescriptor && !ownDescriptor.writable) {
+      if (!ownDescriptor.configurable) {
+        throw new TypeError('performance.now is not writable or configurable');
+      }
+      descriptor.writable = true;
+    }
+
+    Object.defineProperty(target, 'now', descriptor);
+  };
+
+  const restoreNativeTimerState = (state) => {
+    globalScope.setTimeout = state.setTimeout;
+    globalScope.clearTimeout = state.clearTimeout;
+    globalScope.setInterval = state.setInterval;
+    globalScope.clearInterval = state.clearInterval;
+    Object.defineProperty(globalScope, 'Date', state.dateDescriptor);
+
+    if (state.performance) {
+      if (state.performance.ownDescriptor) {
+        Object.defineProperty(
+          state.performance.target,
+          'now',
+          state.performance.ownDescriptor
+        );
+      } else {
+        delete state.performance.target.now;
+      }
+    }
+  };
 
   class VirtualTask {
     constructor(callback, delay, isRecurring, args) {
@@ -2035,31 +2108,56 @@ await (async function () {
 
   function useFakeTimers() {
     if (isUsingFakeTimers) return;
-    nativeTimers = {
+    const NativeDate = globalScope.Date;
+    const performanceTarget = globalScope.performance;
+    const performanceNow = performanceTarget && typeof performanceTarget.now === 'function'
+      ? performanceTarget.now.bind(performanceTarget)
+      : null;
+    const state = {
       setTimeout: globalScope.setTimeout,
       clearTimeout: globalScope.clearTimeout,
       setInterval: globalScope.setInterval,
       clearInterval: globalScope.clearInterval,
+      dateDescriptor: Object.getOwnPropertyDescriptor(globalScope, 'Date'),
+      wallClockEpoch: NativeDate.now(),
+      performance: performanceNow
+        ? {
+            target: performanceTarget,
+            ownDescriptor: Object.getOwnPropertyDescriptor(performanceTarget, 'now'),
+            epoch: performanceNow(),
+          }
+        : null,
     };
-    isUsingFakeTimers = true;
+
+    nativeTimers = state;
     virtualClockTime = 0;
     pendingVirtualTasks = new Map();
 
-    globalScope.setTimeout = (cb, delay = 0, ...args) => scheduleTask(cb, delay, false, args);
-    globalScope.setInterval = (cb, delay = 0, ...args) => scheduleTask(cb, delay, true, args);
-    globalScope.clearTimeout = (id) => cancelTask(id);
-    globalScope.clearInterval = (id) => cancelTask(id);
+    try {
+      globalScope.setTimeout = (cb, delay = 0, ...args) => scheduleTask(cb, delay, false, args);
+      globalScope.setInterval = (cb, delay = 0, ...args) => scheduleTask(cb, delay, true, args);
+      globalScope.clearTimeout = (id) => cancelTask(id);
+      globalScope.clearInterval = (id) => cancelTask(id);
+      globalScope.Date = createVirtualDate(NativeDate);
+      installVirtualPerformanceNow(state);
+      isUsingFakeTimers = true;
+    } catch (cause) {
+      restoreNativeTimerState(state);
+      nativeTimers = null;
+      pendingVirtualTasks = new Map();
+      const error = usageError(`Unable to install fake timers: ${cause.message}`);
+      error.cause = cause;
+      throw error;
+    }
   }
 
   function useRealTimers() {
     if (!isUsingFakeTimers) return;
     isUsingFakeTimers = false;
     if (nativeTimers) {
-      globalScope.setTimeout = nativeTimers.setTimeout;
-      globalScope.clearTimeout = nativeTimers.clearTimeout;
-      globalScope.setInterval = nativeTimers.setInterval;
-      globalScope.clearInterval = nativeTimers.clearInterval;
+      restoreNativeTimerState(nativeTimers);
     }
+    nativeTimers = null;
     pendingVirtualTasks = new Map();
   }
 

@@ -2107,6 +2107,8 @@ nodeDescribe('End-to-End Runner Execution', () => {
   nodeIt('automatically restores spies and fake timers after every test', async () => {
     const service = { getValue: () => 'real' };
     const realSetTimeout = globalThis.setTimeout;
+    const RealDate = globalThis.Date;
+    const realPerformanceNow = globalThis.performance?.now;
 
     const stats = await runIsolated(() => {
       jlIt('mutates global state', () => {
@@ -2117,12 +2119,20 @@ nodeDescribe('End-to-End Runner Execution', () => {
       jlIt('sees a clean environment', () => {
         jlExpect(service.getValue()).toBe('real');
         jlExpect(globalThis.setTimeout).toBe(realSetTimeout);
+        jlExpect(globalThis.Date).toBe(RealDate);
+        if (globalThis.performance) {
+          jlExpect(globalThis.performance.now).toBe(realPerformanceNow);
+        }
       });
     });
 
     nodeAssert.equal(stats.pass, 2, failureMessages(stats).join('\n'));
     nodeAssert.equal(service.getValue(), 'real');
     nodeAssert.equal(globalThis.setTimeout, realSetTimeout);
+    nodeAssert.equal(globalThis.Date, RealDate);
+    if (globalThis.performance) {
+      nodeAssert.equal(globalThis.performance.now, realPerformanceNow);
+    }
   });
 
   nodeIt('resets the root suite after a run unless reset:false is passed', async () => {
@@ -3031,6 +3041,37 @@ nodeDescribe('Fake Timer Engine Reliability', () => {
     nodeAssert.throws(() => jest.advanceTimersToNextTimer(), /Fake timers are not enabled/);
   });
 
+  nodeIt('freezes Date and performance.now until the virtual clock advances', async () => {
+    const RealDate = globalThis.Date;
+    const nativeSetTimeout = globalThis.setTimeout;
+
+    jest.useFakeTimers();
+    const wallClockStart = globalThis.Date.now();
+    const monotonicStart = globalThis.performance?.now();
+
+    await new Promise(resolve => nativeSetTimeout(resolve, 20));
+
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart);
+    nodeAssert.equal(new globalThis.Date().getTime(), wallClockStart);
+    nodeAssert.equal(globalThis.Date(), new RealDate(wallClockStart).toString());
+    nodeAssert.equal(new globalThis.Date(0).getTime(), 0);
+    nodeAssert.equal(globalThis.Date.parse, RealDate.parse);
+    nodeAssert.equal(globalThis.Date.UTC, RealDate.UTC);
+    nodeAssert.ok(new globalThis.Date() instanceof globalThis.Date);
+    nodeAssert.ok(new globalThis.Date() instanceof RealDate);
+    if (monotonicStart !== undefined) {
+      nodeAssert.equal(globalThis.performance.now(), monotonicStart);
+    }
+
+    jest.advanceTimersByTime(250);
+
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart + 250);
+    nodeAssert.equal(new globalThis.Date().getTime(), wallClockStart + 250);
+    if (monotonicStart !== undefined) {
+      nodeAssert.ok(Math.abs(globalThis.performance.now() - monotonicStart - 250) < 0.001);
+    }
+  });
+
   nodeIt('supports self-cancelling intervals', () => {
     jest.useFakeTimers();
     let ticks = 0;
@@ -3069,30 +3110,42 @@ nodeDescribe('Fake Timer Engine Reliability', () => {
 
   nodeIt('implements runAllTimers, runOnlyPendingTimers, advanceTimersToNextTimer and getTimerCount', () => {
     jest.useFakeTimers();
+    const wallClockStart = globalThis.Date.now();
+    const monotonicStart = globalThis.performance?.now();
     const seen = [];
 
     globalThis.setTimeout(() => {
-      seen.push('first');
-      globalThis.setTimeout(() => seen.push('nested'), 10);
+      seen.push(['first', globalThis.Date.now() - wallClockStart]);
+      globalThis.setTimeout(() => {
+        seen.push(['nested', globalThis.Date.now() - wallClockStart]);
+      }, 10);
     }, 10);
-    globalThis.setTimeout(() => seen.push('second'), 20);
+    globalThis.setTimeout(() => {
+      seen.push(['second', globalThis.Date.now() - wallClockStart]);
+    }, 20);
 
     nodeAssert.equal(jest.getTimerCount(), 2);
 
     jest.runOnlyPendingTimers();
-    nodeAssert.deepEqual(seen, ['first', 'second']);
+    nodeAssert.deepEqual(seen, [['first', 10], ['second', 20]]);
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart + 20);
     nodeAssert.equal(jest.getTimerCount(), 1, 'the nested timer is not executed in the same pass');
 
     jest.runAllTimers();
-    nodeAssert.deepEqual(seen, ['first', 'second', 'nested']);
+    nodeAssert.deepEqual(seen, [['first', 10], ['second', 20], ['nested', 20]]);
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart + 20);
     nodeAssert.equal(jest.getTimerCount(), 0);
 
-    globalThis.setTimeout(() => seen.push('step-1'), 5);
-    globalThis.setTimeout(() => seen.push('step-2'), 50);
+    globalThis.setTimeout(() => seen.push(['step-1', globalThis.Date.now() - wallClockStart]), 5);
+    globalThis.setTimeout(() => seen.push(['step-2', globalThis.Date.now() - wallClockStart]), 50);
     jest.advanceTimersToNextTimer();
-    nodeAssert.deepEqual(seen.slice(-1), ['step-1']);
+    nodeAssert.deepEqual(seen.slice(-1), [['step-1', 25]]);
     jest.advanceTimersToNextTimer();
-    nodeAssert.deepEqual(seen.slice(-1), ['step-2']);
+    nodeAssert.deepEqual(seen.slice(-1), [['step-2', 70]]);
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart + 70);
+    if (monotonicStart !== undefined) {
+      nodeAssert.ok(Math.abs(globalThis.performance.now() - monotonicStart - 70) < 0.001);
+    }
     nodeAssert.equal(jest.getTimerCount(), 0);
   });
 
@@ -3111,6 +3164,8 @@ nodeDescribe('Fake Timer Engine Reliability', () => {
 
   nodeIt('keeps virtual clock state consistent after a callback throws', () => {
     jest.useFakeTimers();
+    const wallClockStart = globalThis.Date.now();
+    const monotonicStart = globalThis.performance?.now();
     const order = [];
 
     globalThis.setTimeout(() => { order.push('ok'); }, 5);
@@ -3120,24 +3175,48 @@ nodeDescribe('Fake Timer Engine Reliability', () => {
     nodeAssert.throws(() => jest.advanceTimersByTime(20), /mid-flight failure/);
     nodeAssert.deepEqual(order, ['ok']);
     nodeAssert.equal(jest.getTimerTime(), 10, 'clock stops on the failing task');
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart + 10);
+    if (monotonicStart !== undefined) {
+      nodeAssert.ok(Math.abs(globalThis.performance.now() - monotonicStart - 10) < 0.001);
+    }
 
     // The queue is still usable afterwards
     jest.advanceTimersByTime(10);
     nodeAssert.deepEqual(order, ['ok', 'after']);
+    nodeAssert.equal(globalThis.Date.now(), wallClockStart + 20);
   });
 
-  nodeIt('restores the native timer functions and forgets pending tasks', () => {
+  nodeIt('restores the native timers and clocks and forgets pending tasks', () => {
     const realSetTimeout = globalThis.setTimeout;
     const realClearInterval = globalThis.clearInterval;
+    const RealDate = globalThis.Date;
+    const realPerformanceNow = globalThis.performance?.now;
+    const dateDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Date');
+    const performanceNowDescriptor = globalThis.performance
+      ? Object.getOwnPropertyDescriptor(globalThis.performance, 'now')
+      : undefined;
 
     jest.useFakeTimers();
     nodeAssert.notEqual(globalThis.setTimeout, realSetTimeout);
+    nodeAssert.notEqual(globalThis.Date, RealDate);
+    if (globalThis.performance) {
+      nodeAssert.notEqual(globalThis.performance.now, realPerformanceNow);
+    }
     globalThis.setTimeout(() => {}, 10);
     nodeAssert.equal(jest.getTimerCount(), 1);
 
     jest.useRealTimers();
     nodeAssert.equal(globalThis.setTimeout, realSetTimeout);
     nodeAssert.equal(globalThis.clearInterval, realClearInterval);
+    nodeAssert.equal(globalThis.Date, RealDate);
+    nodeAssert.deepEqual(Object.getOwnPropertyDescriptor(globalThis, 'Date'), dateDescriptor);
+    if (globalThis.performance) {
+      nodeAssert.equal(globalThis.performance.now, realPerformanceNow);
+      nodeAssert.deepEqual(
+        Object.getOwnPropertyDescriptor(globalThis.performance, 'now'),
+        performanceNowDescriptor
+      );
+    }
     nodeAssert.equal(jest.getTimerCount(), 0);
 
     // Repeated calls are safe
@@ -3146,6 +3225,36 @@ nodeDescribe('Fake Timer Engine Reliability', () => {
     nodeAssert.doesNotThrow(() => jest.useFakeTimers());
     jest.useRealTimers();
     nodeAssert.equal(globalThis.setTimeout, realSetTimeout);
+    nodeAssert.equal(globalThis.Date, RealDate);
+    if (globalThis.performance) {
+      nodeAssert.equal(globalThis.performance.now, realPerformanceNow);
+    }
+  });
+
+  nodeIt('rolls back timer and clock patches if a clock cannot be virtualized', () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const RealDate = globalThis.Date;
+    const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+
+    Object.defineProperty(globalThis, 'performance', {
+      configurable: true,
+      writable: true,
+      value: {},
+    });
+    Object.defineProperty(globalThis.performance, 'now', {
+      configurable: false,
+      writable: false,
+      value: () => 0,
+    });
+
+    try {
+      nodeAssert.throws(() => jest.useFakeTimers(), /Unable to install fake timers/);
+      nodeAssert.equal(globalThis.setTimeout, realSetTimeout);
+      nodeAssert.equal(globalThis.Date, RealDate);
+      nodeAssert.doesNotThrow(() => jest.useRealTimers());
+    } finally {
+      Object.defineProperty(globalThis, 'performance', performanceDescriptor);
+    }
   });
 
   nodeIt('rejects non-function timer callbacks', () => {
@@ -3175,6 +3284,22 @@ nodeDescribe('Fake Timer Engine Reliability', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  nodeIt('keeps waitFor timeout deadlines on the real clock under fake timers', async () => {
+    jest.useFakeTimers();
+    const frozenTime = globalThis.Date.now();
+
+    await nodeAssert.rejects(
+      globalThis.jest.waitFor(
+        () => { throw new Error('still waiting'); },
+        { timeout: 30, interval: 5 }
+      ),
+      /waitFor timed out after 30ms/
+    );
+
+    nodeAssert.equal(globalThis.Date.now(), frozenTime);
+    nodeAssert.equal(jest.getTimerTime(), 0);
   });
 });
 
@@ -3273,6 +3398,29 @@ nodeDescribe('Snapshot Key Namespacing', () => {
       nodeAssert.doesNotThrow(() => jlExpect({ custom: true }).toMatchSnapshot('explicit_custom_key'));
       nodeAssert.throws(() => jlExpect({ custom: false }).toMatchSnapshot('explicit_custom_key'), /Snapshot Mismatch/);
       nodeAssert.throws(() => jlExpect({}).toMatchSnapshot({ not: 'a string' }), /expects an optional string name/);
+    } finally {
+      globalThis.localStorage.clear();
+      globalThis._forceBrowserStorage = savedForceBrowser;
+    }
+  });
+
+  nodeIt('round-trips explicit HTML strings and detects markup changes', () => {
+    const savedForceBrowser = globalThis._forceBrowserStorage;
+    globalThis._forceBrowserStorage = true;
+    globalThis.localStorage.clear();
+
+    try {
+      const rendered = '<button type="button" disabled="">Saved</button>';
+      jlExpect(rendered).toMatchSnapshot('html_string_snapshot');
+
+      const stored = globalThis.localStorage.getItem('html_string_snapshot');
+      nodeAssert.equal(stored, JSON.stringify(rendered));
+      nodeAssert.equal(JSON.parse(stored), rendered);
+      nodeAssert.doesNotThrow(() => jlExpect(rendered).toMatchSnapshot('html_string_snapshot'));
+      nodeAssert.throws(
+        () => jlExpect('<button type="button">Save</button>').toMatchSnapshot('html_string_snapshot'),
+        /Snapshot Mismatch/
+      );
     } finally {
       globalThis.localStorage.clear();
       globalThis._forceBrowserStorage = savedForceBrowser;

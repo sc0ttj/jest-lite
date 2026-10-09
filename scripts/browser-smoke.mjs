@@ -13,6 +13,9 @@ const html = `<!doctype html>
   import jest, { describe, expect, run, test } from '/jest-lite.js';
 
   window.smokePromise = (async () => {
+    const RealDate = window.Date;
+    const realPerformanceNow = window.performance.now;
+
     describe('browser runtime', () => {
       test('exposes module and global APIs', () => {
         expect(typeof jest.fn).toBe('function');
@@ -22,6 +25,42 @@ const html = `<!doctype html>
 
       test('uses browser snapshot storage', () => {
         expect({ runtime: 'browser' }).toMatchSnapshot('browser_smoke_snapshot');
+      });
+
+      test('snapshots outerHTML after an interaction', () => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Save';
+        button.addEventListener('click', () => {
+          button.disabled = true;
+          button.textContent = 'Saved';
+        });
+        document.body.appendChild(button);
+
+        button.click();
+
+        expect(button.outerHTML).toMatchSnapshot('browser_html_snapshot');
+      });
+
+      test('advances Date and performance.now with fake timers', () => {
+        jest.useFakeTimers();
+        const wallClockStart = Date.now();
+        const monotonicStart = performance.now();
+        let callbackTime;
+
+        setTimeout(() => {
+          callbackTime = Date.now();
+        }, 125);
+        jest.advanceTimersByTime(125);
+
+        expect(callbackTime).toBe(wallClockStart + 125);
+        expect(new Date().getTime()).toBe(wallClockStart + 125);
+        expect(Math.abs(performance.now() - monotonicStart - 125) < 0.001).toBe(true);
+      });
+
+      test('automatically restores browser clock globals', () => {
+        expect(window.Date).toBe(RealDate);
+        expect(window.performance.now).toBe(realPerformanceNow);
       });
     });
 
@@ -36,6 +75,7 @@ const html = `<!doctype html>
       passing,
       failing,
       snapshot: localStorage.getItem('browser_smoke_snapshot'),
+      htmlSnapshot: localStorage.getItem('browser_html_snapshot'),
     };
   })();
 </script>`;
@@ -59,11 +99,15 @@ try {
   await page.goto(`http://127.0.0.1:${port}`);
   const result = await page.evaluate(() => window.smokePromise);
 
-  assert.equal(result.passing.pass, 2);
+  assert.equal(result.passing.pass, 5);
   assert.equal(result.passing.fail, 0);
   assert.equal(result.failing.pass, 0);
   assert.equal(result.failing.fail, 1);
   assert.match(result.snapshot, /browser/);
+  assert.equal(
+    JSON.parse(result.htmlSnapshot),
+    '<button type="button" disabled="">Saved</button>'
+  );
 
   console.log('Browser smoke test passed.');
 } finally {

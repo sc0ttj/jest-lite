@@ -19,9 +19,10 @@ Use when reviewing snapshot persistence, naming, serialization, update mode, Nod
 3. Verify browser localStorage and in-memory fallback behavior.
 4. Verify implicit key format, explicit names, and per-test call indexes.
 5. Verify serialization for functions, `undefined`, circular values, and unserializable values.
-6. Verify first-write, mismatch, update, and silent-mode behavior.
-7. Compare Node tests, fixture contents, and browser smoke assertions.
-8. Report compatibility gaps with exact evidence.
+6. Verify HTML snapshots use explicit `outerHTML`/`innerHTML` strings and round-trip through JSON string serialization.
+7. Verify first-write, mismatch, update, and silent-mode behavior.
+8. Compare Node tests, fixture contents, and browser smoke assertions.
+9. Report compatibility gaps with exact evidence.
 
 ## Required output
 
@@ -29,4 +30,4 @@ Return a storage matrix, key/serialization matrix, update-mode behavior, and tes
 
 ## Guardrails
 
-Do not replace the bespoke JSON snapshot format with Jest's format. Do not assume browser capability from import-time environment detection.
+Do not replace the bespoke JSON snapshot format with Jest's format. Do not claim direct DOM-node serializer support. Do not assume browser capability from import-time environment detection.
