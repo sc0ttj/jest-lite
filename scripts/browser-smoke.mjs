@@ -66,6 +66,17 @@ const html = `<!doctype html>
 
     const passing = await run({ silent: true, setExitCode: false });
 
+    describe('browser snapshot updates', () => {
+      test('re-records an existing snapshot for one run', () => {
+        expect({ runtime: 'browser-updated' }).toMatchSnapshot('browser_smoke_snapshot');
+      });
+    });
+    const updated = await run({
+      silent: true,
+      setExitCode: false,
+      updateSnapshots: true,
+    });
+
     describe('browser failure reporting', () => {
       test('records a failed assertion', () => expect(1).toBe(2));
     });
@@ -73,6 +84,7 @@ const html = `<!doctype html>
 
     return {
       passing,
+      updated,
       failing,
       snapshot: localStorage.getItem('browser_smoke_snapshot'),
       htmlSnapshot: localStorage.getItem('browser_html_snapshot'),
@@ -101,9 +113,11 @@ try {
 
   assert.equal(result.passing.pass, 5);
   assert.equal(result.passing.fail, 0);
+  assert.equal(result.updated.pass, 1);
+  assert.equal(result.updated.fail, 0);
   assert.equal(result.failing.pass, 0);
   assert.equal(result.failing.fail, 1);
-  assert.match(result.snapshot, /browser/);
+  assert.match(result.snapshot, /browser-updated/);
   assert.equal(
     JSON.parse(result.htmlSnapshot),
     '<button type="button" disabled="">Saved</button>'

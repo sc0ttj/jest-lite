@@ -3427,6 +3427,52 @@ nodeDescribe('Snapshot Key Namespacing', () => {
     }
   });
 
+  nodeIt('updates snapshots for one run without leaking and preserves the legacy global flag', async () => {
+    const savedForceBrowser = globalThis._forceBrowserStorage;
+    const hadLegacyUpdateFlag = Object.prototype.hasOwnProperty.call(globalThis, 'updateSnapshots');
+    const savedLegacyUpdateFlag = globalThis.updateSnapshots;
+    globalThis._forceBrowserStorage = true;
+    globalThis.localStorage.clear();
+    delete globalThis.updateSnapshots;
+
+    let version = 'initial';
+    const register = () => {
+      jlIt('records a version', () => {
+        jlExpect({ version }).toMatchSnapshot('run_option_update_snapshot');
+      });
+    };
+
+    try {
+      const created = await runIsolated(register);
+      nodeAssert.equal(created.fail, 0, failureMessages(created).join('\n'));
+      nodeAssert.match(globalThis.localStorage.getItem('run_option_update_snapshot'), /initial/);
+
+      version = 'updated';
+      const mismatch = await runIsolated(register);
+      nodeAssert.equal(mismatch.fail, 1);
+      nodeAssert.match(mismatch.failures[0].message, /Snapshot Mismatch/);
+
+      const updated = await runIsolated(register, { updateSnapshots: true });
+      nodeAssert.equal(updated.fail, 0, failureMessages(updated).join('\n'));
+      nodeAssert.match(globalThis.localStorage.getItem('run_option_update_snapshot'), /updated/);
+
+      version = 'after-run-option';
+      const optionDidNotLeak = await runIsolated(register);
+      nodeAssert.equal(optionDidNotLeak.fail, 1);
+      nodeAssert.match(globalThis.localStorage.getItem('run_option_update_snapshot'), /updated/);
+
+      globalThis.updateSnapshots = true;
+      const legacyUpdated = await runIsolated(register);
+      nodeAssert.equal(legacyUpdated.fail, 0, failureMessages(legacyUpdated).join('\n'));
+      nodeAssert.match(globalThis.localStorage.getItem('run_option_update_snapshot'), /after-run-option/);
+    } finally {
+      globalThis.localStorage.clear();
+      globalThis._forceBrowserStorage = savedForceBrowser;
+      if (hadLegacyUpdateFlag) globalThis.updateSnapshots = savedLegacyUpdateFlag;
+      else delete globalThis.updateSnapshots;
+    }
+  });
+
   nodeIt('writes snapshots to disk in Node and reuses them across runs', () => {
     const snapPath = path.join(process.cwd(), '__snapshots__', 'jest-lite.snap');
     jlExpect({ persisted: 'node-disk-routing' }).toMatchSnapshot('node_disk_routing_key');

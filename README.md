@@ -285,6 +285,7 @@ const stats = await run({
   setExitCode: true,   // Node only: process.exitCode = 1 on failure (default: true)
   exitOnFail: false,   // Node only: process.exit(1) on failure (default: false)
   throwOnFail: false,  // throw an aggregated Error (with .stats) on failure (default: false)
+  updateSnapshots: false, // re-record snapshots during this run (default: false)
 });
 ```
 
@@ -300,7 +301,7 @@ Returns a stats object:
 ```
 
 - `phase` is one of `'beforeAll'`, `'beforeEach'`, `'test'`, `'afterEach'`, or `'afterAll'`.
-- **Reset behavior:** by default, calling `run()` clears the module-level suite tree afterwards (`reset: true`), so registering new `describe`/`it` calls and calling `run()` again starts fresh. Pass `{ reset: false }` to keep the same tests registered for a second `run()` (useful for testing the runner itself, or re-running with different global flags like `updateSnapshots`). `resetSuites()` and `getRootSuite()` are also exported directly for introspection/manual resets.
+- **Reset behavior:** by default, calling `run()` clears the module-level suite tree afterwards (`reset: true`), so registering new `describe`/`it` calls and calling `run()` again starts fresh. Pass `{ reset: false }` to keep the same tests registered for a second `run()` (useful for testing the runner itself or re-running with different options such as `updateSnapshots`). `resetSuites()` and `getRootSuite()` are also exported directly for introspection/manual resets.
 - Every top-level `run()` call executes the currently-registered suite tree; you don't pass suites into `run()` yourself in normal usage (the internal `{ suite }` option exists for the runner's own recursion and advanced use).
 
 ---
@@ -526,11 +527,46 @@ While fake timers are active, `Date.now()` and zero-argument `new Date()` return
 ## 13. Snapshot testing
 
 ```javascript
-it('verifies UI configuration snapshot', () => {
+import { it, expect, run } from '@sc0ttj/jest-lite';
+
+it('verifies UI configuration', () => {
   const config = { theme: 'dark', sidebar: true, fontSize: 14 };
   expect(config).toMatchSnapshot('ui_theme_config'); // name is optional
 });
+
+await run();
 ```
+
+### Create, check, and update snapshots
+
+1. **Create:** add `toMatchSnapshot()` and run the test normally:
+
+   ```bash
+   node config.test.js
+   ```
+
+   If the key has no stored snapshot, `jest-lite` creates it automatically and the assertion passes. In Node, the snapshot is written to `./__snapshots__/jest-lite.snap`, relative to the current working directory.
+
+2. **Check:** run the same command again. `jest-lite` compares the current serialized value with the stored snapshot and fails on a mismatch.
+
+3. **Update an intentional change:** re-run with snapshot updates enabled:
+
+   ```javascript
+   await run({ updateSnapshots: true });
+   ```
+
+   `updateSnapshots` applies only to that `run()` call. Review the resulting snapshot diff before committing it.
+
+`jest-lite` has no CLI of its own, so it does not provide a built-in `jest -u` command. If you want the familiar command-line workflow, forward your own flag into `run()`:
+
+```javascript
+const updateSnapshots =
+  process.argv.includes('--updateSnapshot') || process.argv.includes('-u');
+
+await run({ updateSnapshots });
+```
+
+Then use `node config.test.js` to check snapshots and `node config.test.js -u` to update them. The older `globalThis.updateSnapshots = true` (or `window.updateSnapshots = true`) switch remains supported for compatibility, but the run option is preferred.
 
 HTML snapshots work by snapshotting the serialized markup string explicitly:
 
@@ -553,7 +589,7 @@ it('captures the button after interaction', () => {
 
 - **Storage:** in Node, snapshots are persisted as JSON to `./__snapshots__/jest-lite.snap` (relative to `process.cwd()`), keyed by snapshot name. In browsers (or when Node's `fs`/`path` aren't reachable), snapshots go to `localStorage`, falling back to an in-memory cache on `globalThis` if `localStorage` is unavailable.
 - **Naming:** if you don't pass a name, the key is generated as `` snap__<suite path joined by " > ">__<test name>__<call index> `` — the call index increments per `toMatchSnapshot()` call within the same test, so multiple snapshots in one test don't collide. Passing an explicit string name overrides this (and is your responsibility to keep unique across the whole run).
-- **First run / update mode:** if no snapshot is stored yet for a key, it's written and the assertion passes. To force re-recording of existing snapshots, set `globalThis.updateSnapshots = true` (or `window.updateSnapshots` in a browser) before calling `run()`.
+- **First run / update mode:** if no snapshot is stored yet for a key, it's written and the assertion passes. To force re-recording of existing snapshots, call `run({ updateSnapshots: true })`.
 - **Serialization:** values are `JSON.stringify`-d (pretty-printed) with functions rendered as `"[Function name]"`, `undefined` as `"[undefined]"`, circular references as `"[Circular]"`, and anything that can't be serialized at all collapses to `"[Unserializable]"`.
 - **HTML strings:** `outerHTML` captures the selected element, its attributes, and descendants; `innerHTML` captures only its children. The string is compared exactly and is stored as a JSON string value, so the snapshot store contains surrounding quotes and escaped characters. Normalize dynamic IDs, timestamps, generated class names, or other non-deterministic markup before snapshotting.
 - Snapshot mismatches log an `Expected`/`Received`/`Fix` diff via `console.groupCollapsed` (unless `run({ silent: true })`) and throw a normal assertion failure.

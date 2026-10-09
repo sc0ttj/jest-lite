@@ -537,6 +537,7 @@ await (async function () {
   let snapshotIndex = 0;
   let currentTestName = '';
   let currentSuitePath = [];
+  let activeSnapshotUpdate = false;
 
   const getSnapshotKey = () => {
     const suitePath = currentSuitePath.length > 0 ? currentSuitePath.join(' > ') : 'root';
@@ -985,9 +986,10 @@ await (async function () {
       snapshotIndex++;
 
       const existing = readSnapshot(key);
-      const shouldUpdate = typeof window !== 'undefined' && window.updateSnapshots !== undefined
+      const legacyShouldUpdate = typeof window !== 'undefined' && window.updateSnapshots !== undefined
         ? window.updateSnapshots
         : globalScope.updateSnapshots;
+      const shouldUpdate = activeSnapshotUpdate || legacyShouldUpdate;
 
       if (existing === null || existing === undefined || shouldUpdate) {
         writeSnapshot(key, serialized);
@@ -999,7 +1001,7 @@ await (async function () {
         console.groupCollapsed(`%c❌ Snapshot Mismatch: ${key}`, 'color: #e74c3c; font-weight: bold');
         console.log('%cExpected:', 'color: #27ae60', existing);
         console.log('%cReceived:', 'color: #c0392b', serialized);
-        console.log('%cFix:', 'color: #8e44ad', 'Set globalThis.updateSnapshots = true; then re-run.');
+        console.log('%cFix:', 'color: #8e44ad', 'Re-run with run({ updateSnapshots: true }).');
         console.groupEnd();
         throw assertionError(`Snapshot Mismatch for ${key}`);
       }
@@ -1679,6 +1681,7 @@ await (async function () {
       setExitCode: config.setExitCode !== false,
       exitOnFail: config.exitOnFail === true,
       throwOnFail: config.throwOnFail === true,
+      updateSnapshots: config.updateSnapshots === true,
     };
   };
 
@@ -1869,23 +1872,30 @@ await (async function () {
    * @param {boolean} [options.setExitCode]  In Node, set process.exitCode = 1 on failure (default true).
    * @param {boolean} [options.exitOnFail]   In Node, hard-exit the process on failure (default false).
    * @param {boolean} [options.throwOnFail]  Throw an aggregated error on failure (default false).
+   * @param {boolean} [options.updateSnapshots] Re-record snapshots during this run (default false).
    * @returns {Promise<Object>} stats { pass, fail, skip, todo, total, failures }
    */
   const run = async (options = {}) => {
     const config = normalizeRunOptions(options);
     const stats = { pass: 0, fail: 0, skip: 0, todo: 0, total: 0, failures: [] };
     const target = config.suite;
+    const previousSnapshotUpdate = activeSnapshotUpdate;
+    activeSnapshotUpdate = config.updateSnapshots;
 
-    await runSuite(target, {
-      parents: [],
-      stats,
-      options: config,
-      rootRef: target,
-      skipped: false,
-      focused: false,
-      globalOnly: suiteHasOnly(target),
-      inheritedError: null,
-    });
+    try {
+      await runSuite(target, {
+        parents: [],
+        stats,
+        options: config,
+        rootRef: target,
+        skipped: false,
+        focused: false,
+        globalOnly: suiteHasOnly(target),
+        inheritedError: null,
+      });
+    } finally {
+      activeSnapshotUpdate = previousSnapshotUpdate;
+    }
 
     stats.total = stats.pass + stats.fail + stats.skip + stats.todo;
 
