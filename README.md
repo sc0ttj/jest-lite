@@ -615,6 +615,8 @@ it('polls until a status banner updates', async () => {
 
 Repeatedly invokes the callback (may be async) until it doesn't throw, or until `timeout` (default `1000`ms) elapses polling every `interval` (default `50`ms), at which point it throws an `Error` describing the last assertion failure it saw.
 
+`timeout` must be a non-negative finite number and `interval` must be a positive finite number; invalid values throw a usage error before polling starts. On timeout, the thrown error also exposes the final callback failure as `error.cause` for structured diagnostics.
+
 ---
 
 ## Global exposure in browsers

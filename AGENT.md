@@ -116,10 +116,32 @@ These are documented in `README.md` as well; keep both files consistent if any o
 
 ## 8. Useful agent skills for this repository
 
+Repository-local skills live under [`.github/skills/`](.github/skills/), with a complete index in [`.github/skills/README.md`](.github/skills/README.md). Each skill defines its trigger, source-of-truth files, bounded procedure, required evidence, output format, mutation policy, and guardrails. Use the smallest applicable skill; use the release gate only when evaluating a publishable change.
+
+For a defect, use the lifecycle sequence: triage and reproduce, investigate root cause, add a failing regression test, apply a surgical fix, diagnose any test failures, then run post-fix validation. Only the regression-test and surgical-fix skills may mutate repository files, and only within the active bug's scope.
+
 | Skill | When to use it |
 |---|---|
-| **Source-of-truth doc sync** | Before writing or reviewing any README/AGENT change, grep/read `jest-lite.js` directly rather than trusting prior docs or memory — this file has been rewritten multiple times and prior documentation has drifted from the implementation (e.g. `activeSpiesList` and CommonJS/CLI framing no longer apply). |
-| **Cross-file consistency check** | After changing an exported API's name, default, or behavior in `jest-lite.js`, grep for its old name/behavior across `jest-lite.test.js`, `README.md`, and `AGENT.md` to catch stale references. |
-| **Matcher coverage audit** | When adding a matcher, cross-reference `BUILT_IN_MATCHER_NAMES` (derived from `createMatchers(undefined)`) against both the README's matcher tables and `jest-lite.test.js` coverage to ensure nothing is documented-but-untested or implemented-but-undocumented. |
-| **Runner semantics tracing** | For any change touching `runSuite`/`run`, manually trace the `beforeAll`-failure, `beforeEach`-failure, and `.only`-cascading code paths described in section 3 above before merging — these interact subtly and are easy to regress silently. |
-| **Smoke-test triad** | Before considering a change "done," run `npm test`, `npm run test:package`, and (for anything touching DOM matchers, snapshots, or global exposure) `npm run test:browser`. |
+| [Repository Test Validation](.github/skills/repo-test-validation/SKILL.md) | Run and report the complete unit, package, and browser validation workflow. |
+| [Source-of-Truth Documentation Sync](.github/skills/source-of-truth-documentation-sync/SKILL.md) | Check README/AGENT claims against `jest-lite.js`, tests, scripts, and package metadata. |
+| [Public API Consistency Audit](.github/skills/public-api-consistency-audit/SKILL.md) | Reconcile ESM exports, the `jest` namespace, browser globals, docs, and package smoke imports. |
+| [Matcher Coverage Audit](.github/skills/matcher-coverage-audit/SKILL.md) | Reconcile implemented, documented, and tested matchers and matcher error/assertion contracts. |
+| [Runner Invariants Audit](.github/skills/runner-invariants-audit/SKILL.md) | Trace hooks, failures, cleanup, timeouts, reset behavior, assertion contracts, and `.only`. |
+| [Mock and Spy Semantics Audit](.github/skills/mock-spy-semantics-audit/SKILL.md) | Check mock metadata, constructors, spies, reset/restore behavior, and registry-contained mocks. |
+| [Fake Timer Safety Audit](.github/skills/fake-timer-safety-audit/SKILL.md) | Check virtual timer behavior, interval guards, cleanup, and real test/hook timeout enforcement. |
+| [Snapshot Compatibility Audit](.github/skills/snapshot-compatibility-audit/SKILL.md) | Check Node/browser storage, key naming, serialization, update mode, and snapshot fixtures. |
+| [Package Publication Audit](.github/skills/package-publication-audit/SKILL.md) | Validate package metadata, import-only exports, published files, dependency classification, and tarball behavior. |
+| [Browser Compatibility Audit](.github/skills/browser-compatibility-audit/SKILL.md) | Check DOM feature detection, browser globals, localStorage snapshots, and real Chromium behavior. |
+| [Release Readiness Check](.github/skills/release-readiness-check/SKILL.md) | Run the broad read-only release gate across docs, package shape, implementation, and all smoke tests. |
+| [Bug Triage and Reproduction](.github/skills/bug-triage-and-reproduction/SKILL.md) | Reduce a bug report to a minimal, repeatable failure and classify its scope. |
+| [Root-Cause Investigation](.github/skills/root-cause-investigation/SKILL.md) | Trace a reproducible failure to a specific code path or violated invariant. |
+| [Regression Test Design](.github/skills/regression-test-design/SKILL.md) | Add deterministic coverage that fails before a fix and protects the reported behavior. |
+| [Surgical Bug Fix](.github/skills/surgical-bug-fix/SKILL.md) | Implement the smallest root-cause correction while preserving repository invariants. |
+| [Test Failure Diagnosis](.github/skills/test-failure-diagnosis/SKILL.md) | Classify test, product, environment, packaging, fixture, and flakiness failures. |
+| [Post-Fix Validation](.github/skills/post-fix-validation/SKILL.md) | Validate a fix with targeted, baseline, package, browser, and release checks by impact. |
+| [Node Testing and Matrix Validation](.github/skills/node-testing-and-matrix-validation/SKILL.md) | Validate Node-native behavior and distinguish local execution from the CI version matrix. |
+| [Browser Testing and Diagnosis](.github/skills/browser-testing-and-diagnosis/SKILL.md) | Run real Chromium smoke tests and classify browser-only failures. |
+| [Coverage Checking and Analysis](.github/skills/coverage-checking-and-analysis/SKILL.md) | Measure configured coverage and identify meaningful uncovered implementation paths. |
+| [Accessibility Testability Audit](.github/skills/accessibility-testability-audit/SKILL.md) | Check lightweight DOM accessibility-relevant assertions without claiming WCAG conformance. |
+
+The older guidance is preserved by these skills: source-of-truth checks must start from `jest-lite.js`, cross-file consistency must include tests and docs, matcher audits must use `BUILT_IN_MATCHER_NAMES`, runner reviews must trace failure/cleanup paths, and the smoke-test triad remains the standard validation for relevant changes.

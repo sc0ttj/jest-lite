@@ -730,6 +730,43 @@ nodeDescribe('jest-lite Framework Coverage Suite', () => {
         }, { timeout: 30, interval: 10 });
       }, /waitFor timed out/);
     });
+
+    nodeIt('validates waitFor options before starting the polling loop', async () => {
+      await nodeAssert.rejects(
+        globalThis.jest.waitFor(() => {}, { timeout: NaN }),
+        /waitFor timeout must be a non-negative finite number/
+      );
+      await nodeAssert.rejects(
+        globalThis.jest.waitFor(() => {}, { timeout: -1 }),
+        /waitFor timeout must be a non-negative finite number/
+      );
+      await nodeAssert.rejects(
+        globalThis.jest.waitFor(() => {}, { interval: 0 }),
+        /waitFor interval must be a positive finite number/
+      );
+      await nodeAssert.rejects(
+        globalThis.jest.waitFor(() => {}, { interval: Infinity }),
+        /waitFor interval must be a positive finite number/
+      );
+      await nodeAssert.rejects(
+        globalThis.jest.waitFor(() => {}, null),
+        /waitFor options must be an object/
+      );
+    });
+
+    nodeIt('preserves the final polling failure as the timeout error cause', async () => {
+      let timeoutError;
+      try {
+        await globalThis.jest.waitFor(() => {
+          throw new Error('custom_polling_error');
+        }, { timeout: 30, interval: 10 });
+      } catch (error) {
+        timeoutError = error;
+      }
+
+      nodeAssert.match(timeoutError.message, /waitFor timed out after 30ms/);
+      nodeAssert.equal(timeoutError.cause?.message, 'custom_polling_error');
+    });
   });
 
 

@@ -1950,8 +1950,17 @@ await (async function () {
     if (typeof callback !== 'function') {
       throw usageError(`waitFor expects a callback function, got ${print(callback)}`);
     }
+    if (options === null || typeof options !== 'object') {
+      throw usageError(`waitFor options must be an object, got ${print(options)}`);
+    }
     const timeout = options.timeout ?? 1000;
     const interval = options.interval ?? 50;
+    if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0) {
+      throw usageError(`waitFor timeout must be a non-negative finite number, got ${print(timeout)}`);
+    }
+    if (typeof interval !== 'number' || !Number.isFinite(interval) || interval <= 0) {
+      throw usageError(`waitFor interval must be a positive finite number, got ${print(interval)}`);
+    }
     const startTime = Date.now();
     const scheduler = nativeTimers ? nativeTimers.setTimeout : globalScope.setTimeout;
 
@@ -1964,9 +1973,11 @@ await (async function () {
         lastError = error;
       }
       if (Date.now() - startTime >= timeout) {
-        throw new Error(
+        const timeoutError = new Error(
           `waitFor timed out after ${timeout}ms. Last internal runner exception was: ${errorMessage(lastError)}`
         );
+        timeoutError.cause = lastError;
+        throw timeoutError;
       }
       await new Promise(resolve => scheduler(resolve, interval));
     }
